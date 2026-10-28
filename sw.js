@@ -1,5 +1,5 @@
 // オフラインでも開けるように、ページ一式をスマホに保存しておく（電波のない場所でも使える）
-const CACHE = 'gsr400-v8';
+const CACHE = 'gsr400-v9';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES))); self.skipWaiting(); });
 self.addEventListener('activate', e => {
