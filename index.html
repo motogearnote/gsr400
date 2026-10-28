@@ -77,6 +77,8 @@ td.cur{outline:3px solid #fff;outline-offset:-3px}
     <div class="note">ふだんはマフラーに付けたままでOK。キーONで自動的に暖機し、約15〜25秒で「測定中」になります（暖機が終わってからエンジンをかけるのがおすすめ）。<br>フリーエア校正（最初の1回だけ。結果は本体に保存）：センサーを外して大気中に出し、「測定中」になって1分ほど待ってから押す。<br>状態：<b id="sens">-</b>　Ri：<b id="ri">-</b>Ω　バッテリー：<b id="vb">-</b>V<br>診断：Un <b id="un">-</b>V　Ip <b id="ip">-</b>mA　ポンプ <b id="vset">-</b>V　向き <b id="dir">-</b>　ヒーター <b id="hv">-</b>V<br>フリーエア校正：<b id="calst">-</b></div>
     <button class="btn" onclick="cmd('cal')">フリーエア校正</button>
     <button class="btn" onclick="cmd('reset')">センサー制御を再起動</button>
+    <button class="btn" onclick="swRows=[];drawSweep();cmd('sweep')">ポンプ特性テスト（約20秒・状態RUNで、センサーは大気中）</button>
+    <div class="note" id="swbox" style="display:none">ポンプ特性テストの結果（この画面をスクリーンショットして送ってください）<table id="swtbl" style="width:100%;font-size:13px;margin-top:6px"></table></div>
     <button class="btn" onclick="cmd('pumpdir')">ポンプの向きを反転（RUNのまま測定中にならないとき）</button></div>
   <div class="set"><h3>A/Fマップ</h3>
     <div class="note">microSD：<b id="sd">-</b></div>
@@ -98,7 +100,7 @@ const STATES=['INIT','CONDENSE','RAMP','RUN','FAULT'];
 const MSG={OK_TPS_CLOSED:'全閉を保存しました',OK_TPS_WOT:'全開を保存しました',OK_PPR:'パルス数を保存しました',NG_PPR:'0.5〜8 の範囲で入れてください',
   OK_CAL_START:'校正を始めました（2秒）',NG_CAL_NOTREADY:'センサーが「測定中」になってから押してください',OK_CAL_DONE:'フリーエア校正を保存しました',
   NG_CAL_RANGE:'校正値が範囲外です（配線か暖機を確認）',OK_RESET:'センサー制御を再起動しました',OK_CLEARMAP:'マップを消去しました',
-  OK_CLEARMAP_NOSD:'消去しました（microSDに保存できません）',NG_UNKNOWN:'不明なコマンドです',OK_CAL_DONE_SD:'フリーエア校正をmicroSDと本体に保存しました（次回から不要です）',OK_HEAT:'エンジン停止のまま暖機を始めました（校正が終わったら本体の電源を切ってください）',OK_PUMPDIR_P:'ポンプの向きを +1 にして再起動しました',OK_PUMPDIR_M:'ポンプの向きを -1 にして再起動しました'};
+  OK_CLEARMAP_NOSD:'消去しました（microSDに保存できません）',NG_UNKNOWN:'不明なコマンドです',OK_CAL_DONE_SD:'フリーエア校正をmicroSDと本体に保存しました（次回から不要です）',OK_SWEEP_START:'ポンプ特性テストを始めました（約20秒）',OK_SWEEP_END:'ポンプ特性テストが終わりました',NG_SWEEP_NOTRUN:'状態がRUNになってから押してください',NG_SWEEP_ABORT:'テストが中断されました（センサーの状態が変わりました）',OK_HEAT:'エンジン停止のまま暖機を始めました（校正が終わったら本体の電源を切ってください）',OK_PUMPDIR_P:'ポンプの向きを +1 にして再起動しました',OK_PUMPDIR_M:'ポンプの向きを -1 にして再起動しました'};
 const $=id=>document.getElementById(id);
 let dev=null, chCmd=null, wantConnected=false, map=[...Array(RPM_N)].map(()=>Array(TPS_N).fill(null));
 let last={}, cnt=0, rate=0, cur={r:-1,c:-1};
@@ -145,6 +147,7 @@ async function open(){
   live.addEventListener('characteristicvaluechanged',e=>onLive(e.target.value));
   mp.addEventListener('characteristicvaluechanged',e=>onMap(e.target.value));
   rs.addEventListener('characteristicvaluechanged',e=>{const t=new TextDecoder().decode(e.target.value);
+    if(t[0]==='S'&&/^S\d/.test(t)){const a=t.slice(1).split(' ').map(Number);swRows[a[0]]=a;drawSweep();return;}
     if(t[0]==='D'){const a=t.slice(1).split(' ').map(Number);$('un').textContent=(a[0]/1000).toFixed(3);$('ip').textContent=(a[1]/100).toFixed(2);$('hv').textContent=(a[2]/10).toFixed(1);
       if(a.length>=4){const src=t.trim().split(' ')[4]||'-';$('calst').textContent=src==='-'?'未校正（初回だけ行ってください）':'済み（係数 '+(a[3]/1000).toFixed(3)+'、'+(src==='S'?'microSDと本体に保存':'本体に保存・microSDなし')+'）';}
       return;}
@@ -167,6 +170,9 @@ async function cmd(t){
   try{await chCmd.writeValue(new TextEncoder().encode(t));}catch(e){toast('送信できませんでした');}
 }
 function reqMap(){cmd('map');}
+const SWV=[0,0.2,0.4,0.6,0.8,1.0,1.2,1.4,-0.2,-0.4,-0.8,-1.2];let swRows=[];
+function drawSweep(){$('swbox').style.display='block';let h='<tr><th>ポンプ電圧</th><th>Un</th><th>Ip</th><th>基準電流</th></tr>';
+  SWV.forEach((v,i)=>{const r=swRows[i];h+='<tr><td>'+(v>=0?'+':'')+v.toFixed(1)+' V</td><td>'+(r?(r[1]/1000).toFixed(3)+' V':'…')+'</td><td>'+(r?(r[2]/100).toFixed(2)+' mA':'')+'</td><td>'+(r?r[3]+' µA':'')+'</td></tr>';});$('swtbl').innerHTML=h;}
 
 function onLive(v){
   const u16=i=>v.getUint16(i,true);
