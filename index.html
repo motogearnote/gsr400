@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0f1412">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>GSR400 Logger</title>
+<!--
+  GSR400 データロガーの表示ページ（Bluetooth LE 版）
+  iPhone ：無料アプリ「Bluefy」でこのページのURLを開く（SafariはBluetoothに対応していない）
+  Android：Chrome でこのページのURLを開く（メニュー →「ホーム画面に追加」でアプリのように使える）
+  本体側：firmware/GSR400_LOGGER（BLE名「GSR400」）
+-->
+<style>
+:root{--bg:#0f1412;--card:#18201c;--fg:#e8efe9;--mut:#8fa197;--acc:#4fbf86;--warn:#e0a54a;--bad:#e05a4f;--line:#2a3530}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif}
+header{display:flex;gap:6px;padding:10px 12px;padding-top:max(10px,env(safe-area-inset-top));position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);z-index:2}
+header button{flex:1;padding:10px 0;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:8px;font-size:15px}
+header button.on{background:var(--acc);color:#06120b;border-color:var(--acc);font-weight:700}
+main{padding:12px;max-width:900px;margin:0 auto}.tab{display:none}.tab.on{display:block}
+.big{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:10px}
+.lbl{color:var(--mut);font-size:15px}.val{font-size:64px;font-weight:800;line-height:1.05;font-variant-numeric:tabular-nums}
+.unit{font-size:22px;color:var(--mut);margin-left:6px;font-weight:600}
+.row{display:flex;gap:10px}.row .big{flex:1}.row .val{font-size:44px}
+.st{font-size:14px;color:var(--mut);margin:6px 2px;line-height:1.6}.ok{color:var(--acc)}.wn{color:var(--warn)}.ng{color:var(--bad)}
+.mapwrap{overflow:auto;border:1px solid var(--line);border-radius:10px;max-height:66vh}
+table{border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums}
+th,td{border:1px solid var(--line);padding:4px 5px;text-align:center;min-width:38px}
+th{position:sticky;background:#1f2924;color:var(--mut);font-weight:600}thead th{top:0;z-index:1}tbody th{left:0}
+td.cur{outline:3px solid #fff;outline-offset:-3px}
+.btn{display:block;width:100%;padding:13px;margin:8px 0;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--fg);font-size:16px;text-align:center}
+.btn.acc{background:var(--acc);color:#06120b;font-weight:700;border-color:var(--acc)}.btn.bad{border-color:var(--bad);color:var(--bad)}
+.set{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px}
+.set h3{margin:0 0 8px;font-size:16px}input{width:100%;padding:10px;font-size:16px;border-radius:8px;border:1px solid var(--line);background:#0b0f0d;color:var(--fg)}
+.note{font-size:13px;color:var(--mut);line-height:1.6}
+.legend{display:flex;gap:8px;font-size:12px;color:var(--mut);margin:8px 0;flex-wrap:wrap}.legend span{padding:2px 6px;border-radius:4px;color:#000}
+#connect{position:fixed;inset:0;background:rgba(10,14,12,.96);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;z-index:9;text-align:center}
+#connect.hide{display:none}#connect h1{font-size:22px;margin:0}#connect .btn{max-width:320px}
+#toast{position:fixed;left:12px;right:12px;bottom:max(16px,env(safe-area-inset-bottom));background:#26332c;border:1px solid var(--line);border-radius:10px;padding:12px;font-size:15px;display:none;z-index:8}
+</style></head><body>
+<div id="connect">
+  <h1>GSR400 Logger</h1>
+  <div class="note" id="cmsg">本体の電源を入れてから「接続」を押し、一覧から「GSR400」を選んでください。</div>
+  <div class="note" id="andro" style="display:none">Android：スマホのBluetoothと位置情報をONにしてください。初回は「付近のデバイス」の許可を求められたら「許可」を押します。</div>
+  <button class="btn acc" id="cbtn">接続</button>
+  <div class="note" id="nobt" style="display:none">このブラウザはBluetoothに対応していません。<br>iPhoneは無料アプリ「Bluefy」でこのページを開いてください。<br>AndroidはChrome（バージョン56以降）で開いてください。<br>※Bluetoothは https:// のページでしか使えません。</div>
+</div>
+<header><button class="on" data-t="live">ライブ</button><button data-t="map">A/Fマップ</button><button data-t="cfg">設定</button></header>
+<main>
+<section id="live" class="tab on">
+  <div class="big"><div class="lbl">空燃比</div><div><span class="val" id="afr">--.-</span></div></div>
+  <div class="row">
+    <div class="big"><div class="lbl">回転数</div><div><span class="val" id="rpm">0</span><span class="unit">rpm</span></div></div>
+    <div class="big"><div class="lbl">スロットル開度</div><div><span class="val" id="tps">0</span><span class="unit">%</span></div></div>
+  </div>
+  <div class="st" id="st">未接続</div>
+</section>
+<section id="map" class="tab">
+  <div class="note">縦＝回転数、横＝スロットル開度。マスの数字は、その条件で最後に記録した空燃比です（本体のmicroSDの AFRMAP.CSV に自動保存）。白枠は今の位置。</div>
+  <div class="legend"><span style="background:#5b8def">〜12.0 濃い</span><span style="background:#7fd1a6">12.0〜13.5</span><span style="background:#c9e36a">13.5〜14.7</span><span style="background:#f2b84b">14.7〜16</span><span style="background:#ef6b5b">16〜 薄い</span></div>
+  <div class="mapwrap"><table id="tbl"></table></div>
+  <button class="btn" onclick="reqMap()">最新のマップを読み込む</button>
+  <button class="btn acc" onclick="downloadCsv()">CSVを保存</button>
+</section>
+<section id="cfg" class="tab">
+  <div class="set"><h3>スロットル開度の校正</h3>
+    <div class="note">エンジンを止めてキーONにし、スロットルを全閉・全開にしてそれぞれ押してください。今のTPS電圧：<b id="tpsv">-</b> V</div>
+    <button class="btn" onclick="cmd('tps_closed')">今の位置を「全閉 0%」にする</button>
+    <button class="btn" onclick="cmd('tps_wot')">今の位置を「全開 100%」にする</button></div>
+  <div class="set"><h3>回転数の換算</h3>
+    <div class="note">1回転あたりのパルス数。アイドリングの回転数がメーターと合わなければ変えてください（例：1 または 2）。</div>
+    <input id="ppr" type="number" inputmode="decimal" step="0.5" min="0.5" max="8">
+    <button class="btn" onclick="cmd('ppr='+document.getElementById('ppr').value)">保存</button></div>
+  <div class="set"><h3>A/Fセンサー</h3>
+    <div class="note">フリーエア校正：センサーを外して大気中に出し、暖機が終わって「測定中」になってから押す。<br>状態：<b id="sens">-</b>　Ri：<b id="ri">-</b>Ω　バッテリー：<b id="vb">-</b>V<br>診断：Un <b id="un">-</b>V　Ip <b id="ip">-</b>mA　ポンプ <b id="vset">-</b>V　向き <b id="dir">-</b>　ヒーター <b id="hv">-</b>V</div>
+    <button class="btn" onclick="cmd('cal')">フリーエア校正</button>
+    <button class="btn" onclick="cmd('reset')">センサー制御を再起動</button>
+    <button class="btn" onclick="cmd('pumpdir')">ポンプの向きを反転（RUNのまま測定中にならないとき）</button></div>
+  <div class="set"><h3>A/Fマップ</h3>
+    <div class="note">microSD：<b id="sd">-</b></div>
+    <button class="btn bad" onclick="if(confirm('マップを全部消しますか？'))cmd('clearmap')">マップを全消去</button></div>
+  <div class="set"><h3>表示</h3>
+    <div class="note">接続中は画面が消えないようにしています（対応している機種のみ）。<br>画面消灯防止：<b id="wl">-</b></div></div>
+  <div class="set"><h3>接続</h3>
+    <button class="btn" onclick="disconnect()">切断する</button></div>
+</section>
+</main>
+<div id="toast"></div>
+<script>
+// 本体（firmware/GSR400_LOGGER.ino）と同じUUID
+const SVC='6a4e0001-6c2b-4f3a-9d1e-475352343030', LIVE='6a4e0002-6c2b-4f3a-9d1e-475352343030',
+      MAP='6a4e0003-6c2b-4f3a-9d1e-475352343030', CMD='6a4e0004-6c2b-4f3a-9d1e-475352343030',
+      RESP='6a4e0005-6c2b-4f3a-9d1e-475352343030';
+const RPM_MIN=1000, RPM_STEP=500, RPM_N=27, TPS_STEP=5, TPS_N=21;
+const STATES=['INIT','CONDENSE','RAMP','RUN','FAULT'];
+const MSG={OK_TPS_CLOSED:'全閉を保存しました',OK_TPS_WOT:'全開を保存しました',OK_PPR:'パルス数を保存しました',NG_PPR:'0.5〜8 の範囲で入れてください',
+  OK_CAL_START:'校正を始めました（2秒）',NG_CAL_NOTREADY:'センサーが「測定中」になってから押してください',OK_CAL_DONE:'フリーエア校正を保存しました',
+  NG_CAL_RANGE:'校正値が範囲外です（配線か暖機を確認）',OK_RESET:'センサー制御を再起動しました',OK_CLEARMAP:'マップを消去しました',
+  OK_CLEARMAP_NOSD:'消去しました（microSDに保存できません）',NG_UNKNOWN:'不明なコマンドです',OK_PUMPDIR_P:'ポンプの向きを +1 にして再起動しました',OK_PUMPDIR_M:'ポンプの向きを -1 にして再起動しました'};
+const $=id=>document.getElementById(id);
+let dev=null, chCmd=null, wantConnected=false, map=[...Array(RPM_N)].map(()=>Array(TPS_N).fill(null));
+let last={}, cnt=0, rate=0, cur={r:-1,c:-1};
+
+document.querySelectorAll('header button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('header button').forEach(x=>x.classList.toggle('on',x===b));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('on',t.id===b.dataset.t));
+  if(b.dataset.t==='map') reqMap();});
+function toast(t){const e=$('toast');e.textContent=t;e.style.display='block';clearTimeout(toast.h);toast.h=setTimeout(()=>e.style.display='none',2500);}
+function col(a){if(a==null)return '';return a<12?'#5b8def':a<13.5?'#7fd1a6':a<14.7?'#c9e36a':a<16?'#f2b84b':'#ef6b5b';}
+
+const isAndroid=/Android/i.test(navigator.userAgent);
+if(isAndroid)$('andro').style.display='block';
+if(!navigator.bluetooth){$('cbtn').style.display='none';$('nobt').style.display='block';}
+else if(navigator.bluetooth.getAvailability){navigator.bluetooth.getAvailability().then(ok=>{if(!ok)$('cmsg').textContent='スマホのBluetoothがOFFか、使えない状態です。BluetoothをONにしてください。';}).catch(()=>{});}
+// オフライン用（電波のない場所でもページを開けるようにする）
+if('serviceWorker' in navigator&&location.protocol==='https:')navigator.serviceWorker.register('sw.js').catch(()=>{});
+// 走行中に画面が消えないようにする（Android Chrome など対応機種）
+let wakeLock=null;
+async function keepAwake(){
+  try{if('wakeLock' in navigator&&!wakeLock){wakeLock=await navigator.wakeLock.request('screen');$('wl').textContent='ON';
+      wakeLock.addEventListener('release',()=>{wakeLock=null;$('wl').textContent='OFF';});}
+    else if(!('wakeLock' in navigator))$('wl').textContent='この機種は非対応（端末の自動ロックを長めにしてください）';}
+  catch(e){$('wl').textContent='OFF';}
+}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&chCmd)keepAwake();});
+$('cbtn').onclick=connect;
+
+async function connect(){
+  try{
+    dev=await navigator.bluetooth.requestDevice({filters:[{name:'GSR400'},{services:[SVC]}],optionalServices:[SVC]});
+    dev.addEventListener('gattserverdisconnected',onDisc);
+    wantConnected=true; await open();
+  }catch(e){
+    if(e.name==='NotFoundError'&&/cancel/i.test(e.message)){$('cmsg').textContent='選択がキャンセルされました。もう一度「接続」を押してください。';return;}
+    $('cmsg').textContent='接続できませんでした（'+e.message+'）。本体の電源とスマホのBluetooth'+(isAndroid?'・位置情報':'')+'を確認してください。';}
+}
+async function open(){
+  $('cmsg').textContent='接続中…';
+  const srv=await dev.gatt.connect();
+  const s=await srv.getPrimaryService(SVC);
+  const live=await s.getCharacteristic(LIVE), mp=await s.getCharacteristic(MAP), rs=await s.getCharacteristic(RESP);
+  chCmd=await s.getCharacteristic(CMD);
+  live.addEventListener('characteristicvaluechanged',e=>onLive(e.target.value));
+  mp.addEventListener('characteristicvaluechanged',e=>onMap(e.target.value));
+  rs.addEventListener('characteristicvaluechanged',e=>{const t=new TextDecoder().decode(e.target.value);
+    if(t[0]==='D'){const a=t.slice(1).split(' ').map(Number);$('un').textContent=(a[0]/1000).toFixed(3);$('ip').textContent=(a[1]/100).toFixed(2);$('hv').textContent=(a[2]/10).toFixed(1);return;}
+    toast(MSG[t]||t);});
+  await live.startNotifications(); await mp.startNotifications(); await rs.startNotifications();
+  $('connect').classList.add('hide');
+  keepAwake();
+  reqMap();
+}
+async function onDisc(){
+  chCmd=null; $('st').innerHTML='<span class="ng">切断されました。再接続中…</span>';
+  for(let i=0;i<30&&wantConnected;i++){            // 自動で再接続（範囲外に出たときなど）
+    try{await open();return;}catch(e){await new Promise(r=>setTimeout(r,1000));}
+  }
+  if(wantConnected){$('connect').classList.remove('hide');$('cmsg').textContent='再接続できませんでした。「接続」を押してください。';}
+}
+function disconnect(){wantConnected=false;if(dev&&dev.gatt.connected)dev.gatt.disconnect();$('connect').classList.remove('hide');$('cmsg').textContent='切断しました。';}
+async function cmd(t){
+  if(!chCmd){toast('未接続です');return;}
+  try{await chCmd.writeValue(new TextEncoder().encode(t));}catch(e){toast('送信できませんでした');}
+}
+function reqMap(){cmd('map');}
+
+function onLive(v){
+  const u16=i=>v.getUint16(i,true);
+  const d={afr:u16(0)/100,rpm:u16(2),tps:u16(4)/10,tpsv:u16(6)/1000,vb:u16(8)/100,ri:u16(10),
+           valid:!!(v.getUint8(12)&1),air:!!(v.getUint8(12)&2),sd:!!(v.getUint8(12)&4),
+           state:STATES[v.getUint8(13)]||'?',cr:v.getInt8(14),cc:v.getInt8(15),ppr:v.getUint8(16)/2,
+           sat:v.byteLength>17&&!!(v.getUint8(17)&1),dir:v.byteLength>17&&(v.getUint8(17)&2)?-1:1,vset:v.byteLength>18?v.getUint8(18)/80:0};
+  last=d; cnt++;
+  $('afr').textContent=d.valid?(d.air?'AIR':d.afr.toFixed(1)):'--.-';
+  $('rpm').textContent=d.rpm; $('tps').textContent=Math.round(d.tps);
+  const s=d.valid?'<span class="ok">測定中</span>':(d.state==='FAULT'?'<span class="ng">センサー異常</span>':'<span class="wn">暖機中（'+d.state+'）</span>');
+  $('st').innerHTML='A/Fセンサー：'+s+'　バッテリー '+d.vb.toFixed(1)+'V　microSD '+(d.sd?'OK':'<span class="ng">なし</span>')+'　更新 '+rate+'回/秒';
+  $('tpsv').textContent=d.tpsv.toFixed(2); $('sens').textContent=d.state; $('ri').textContent=d.ri; $('vb').textContent=d.vb.toFixed(1);
+  $('sd').textContent=d.sd?'OK':'カードなし';
+  $('vset').innerHTML=d.sat?'<span class="ng">'+d.vset.toFixed(2)+'（張り付き）</span>':d.vset.toFixed(2); $('dir').textContent=d.dir>0?'+1':'-1';
+  if(document.activeElement!==$('ppr')) $('ppr').value=d.ppr;
+  // 今の位置に記録された値はその場でマップにも反映する
+  if(d.valid&&!d.air&&d.rpm>=600&&d.cr>=0&&d.cc>=0){const a=Math.round(d.afr*10)/10;if(map[d.cr][d.cc]!==a){map[d.cr][d.cc]=a;drawCell(d.cr,d.cc);}}
+  if(d.cr!==cur.r||d.cc!==cur.c){const o=document.querySelector('td.cur');if(o)o.classList.remove('cur');
+    const n=$('c'+d.cr+'_'+d.cc);if(n)n.classList.add('cur');cur={r:d.cr,c:d.cc};}
+}
+setInterval(()=>{rate=cnt;cnt=0;if(chCmd&&$('cfg').classList.contains('on'))cmd('diag');},1000);  // 設定画面を開いている間だけ診断値を取る
+
+function onMap(v){
+  const r=v.getUint8(0), c0=v.getUint8(1);
+  for(let i=2;i<v.byteLength;i++){const x=v.getUint8(i);map[r][c0+i-2]=x?x/10:null;drawCell(r,c0+i-2);}
+}
+function buildTable(){
+  let h='<thead><tr><th>rpm＼%</th>';for(let c=0;c<TPS_N;c++)h+='<th>'+c*TPS_STEP+'</th>';h+='</tr></thead><tbody>';
+  for(let r=RPM_N-1;r>=0;r--){h+='<tr><th>'+(RPM_MIN+r*RPM_STEP)+'</th>';for(let c=0;c<TPS_N;c++)h+='<td id="c'+r+'_'+c+'"></td>';h+='</tr>';}
+  $('tbl').innerHTML=h+'</tbody>';
+}
+function drawCell(r,c){const e=$('c'+r+'_'+c);if(!e)return;const a=map[r][c];e.textContent=a==null?'':a.toFixed(1);e.style.background=col(a);e.style.color=a==null?'':'#000';}
+function downloadCsv(){
+  let s='RPM\\TPS%';for(let c=0;c<TPS_N;c++)s+=','+c*TPS_STEP;s+='\r\n';
+  for(let r=0;r<RPM_N;r++){s+=RPM_MIN+r*RPM_STEP;for(let c=0;c<TPS_N;c++)s+=','+(map[r][c]==null?'':map[r][c].toFixed(1));s+='\r\n';}
+  const f=new File([s],'AFRMAP.CSV',{type:'text/csv'});
+  if(navigator.canShare&&navigator.canShare({files:[f]})){navigator.share({files:[f]}).catch(()=>{});return;}
+  const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download='AFRMAP.CSV';a.click();
+}
+buildTable();
+</script></body></html>
