@@ -83,6 +83,9 @@ td.cur{outline:3px solid #fff;outline-offset:-3px}
     <div class="note">基板のR25（ポンプ電流検出抵抗）の値：基板のまま＝100Ω、交換したら47Ωを選んで保存</div>
     <select id="rsv" style="width:100%;padding:10px;font-size:16px;border-radius:10px"><option value="100">100Ω（基板のまま）</option><option value="47">47Ω（交換後）</option></select>
     <button class="btn" onclick="cmd('rs='+document.getElementById('rsv').value)">R25の値を保存</button>
+    <div class="note">ポンプ制御の強さ：走行中に「ポンプ張り付き」が多いときは弱めにする</div>
+    <select id="pgv" style="width:100%;padding:10px;font-size:16px;border-radius:10px"><option value="1">標準</option><option value="0.5">弱め（1/2）</option><option value="0.25">さらに弱め（1/4）</option><option value="2">強め（2倍）</option></select>
+    <button class="btn" onclick="cmd('pgain='+document.getElementById('pgv').value)">ポンプ制御の強さを保存</button>
     <button class="btn" onclick="swRows=[];drawSweep();cmd('sweep')">ポンプ特性テスト（約30秒・状態RUNで、センサーは大気中）</button>
     <div class="note" id="swbox" style="display:none">ポンプ特性テストの結果（この画面をスクリーンショットして送ってください）<table id="swtbl" style="width:100%;font-size:13px;margin-top:6px"></table></div>
     <button class="btn" onclick="cmd('pumpdir')">ポンプの向きを反転（RUNのまま測定中にならないとき）</button></div>
@@ -106,7 +109,7 @@ const STATES=['INIT','CONDENSE','RAMP','RUN','FAULT'];
 const MSG={OK_TPS_CLOSED:'全閉を保存しました',OK_TPS_WOT:'全開を保存しました',OK_PPR:'パルス数を保存しました',NG_PPR:'0.5〜8 の範囲で入れてください',
   OK_CAL_START:'校正を始めました（2秒）',NG_CAL_NOTREADY:'センサーが「測定中」になってから押してください',OK_CAL_DONE:'フリーエア校正を保存しました',
   NG_CAL_RANGE:'校正値が範囲外です（配線か暖機を確認）',OK_RESET:'センサー制御を再起動しました',OK_CLEARMAP:'マップを消去しました',
-  OK_CLEARMAP_NOSD:'消去しました（microSDに保存できません）',NG_UNKNOWN:'不明なコマンドです',OK_CAL_DONE_SD:'フリーエア校正をmicroSDと本体に保存しました（次回から不要です）',OK_SWEEP_START:'ポンプ特性テストを始めました（約30秒）',OK_SWEEP_END:'ポンプ特性テストが終わりました',NG_SWEEP_NOTRUN:'状態がRUNになってから押してください',NG_SWEEP_ABORT:'テストが中断されました（センサーの状態が変わりました）',OK_SCALE:'補正係数を保存しました',NG_SCALE:'0.25〜1.5の範囲で入れてください',OK_RS:'R25の値を保存しました（センサー制御を再起動します）',NG_RS:'20〜200Ωの範囲で選んでください',OK_HEAT:'エンジン停止のまま暖機を始めました（校正が終わったら本体の電源を切ってください）',OK_PUMPDIR_P:'ポンプの向きを +1 にして再起動しました',OK_PUMPDIR_M:'ポンプの向きを -1 にして再起動しました'};
+  OK_CLEARMAP_NOSD:'消去しました（microSDに保存できません）',NG_UNKNOWN:'不明なコマンドです',OK_CAL_DONE_SD:'フリーエア校正をmicroSDと本体に保存しました（次回から不要です）',OK_SWEEP_START:'ポンプ特性テストを始めました（約30秒）',OK_SWEEP_END:'ポンプ特性テストが終わりました',NG_SWEEP_NOTRUN:'状態がRUNになってから押してください',NG_SWEEP_ABORT:'テストが中断されました（センサーの状態が変わりました）',OK_SCALE:'補正係数を保存しました',NG_SCALE:'0.25〜1.5の範囲で入れてください',OK_RS:'R25の値を保存しました（センサー制御を再起動します）',NG_RS:'20〜200Ωの範囲で選んでください',OK_PGAIN:'ポンプ制御の強さを保存しました',NG_PGAIN:'0.1〜4の範囲で選んでください',OK_HEAT:'エンジン停止のまま暖機を始めました（校正が終わったら本体の電源を切ってください）',OK_PUMPDIR_P:'ポンプの向きを +1 にして再起動しました',OK_PUMPDIR_M:'ポンプの向きを -1 にして再起動しました'};
 const $=id=>document.getElementById(id);
 let dev=null, chCmd=null, wantConnected=false, map=[...Array(RPM_N)].map(()=>Array(TPS_N).fill(null));
 let last={}, cnt=0, rate=0, cur={r:-1,c:-1};
