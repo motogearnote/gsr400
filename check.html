@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GSR400 配線チェック</title>
+<style>
+:root{--bg:#111614;--card:#1b221f;--fg:#e8efe9;--mut:#9aa8a0;--ok:#6fd39a;--ng:#ff6b5e;--wn:#f2b84b;--acc:#6fbf8a}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,"Hiragino Sans","Noto Sans JP",sans-serif}
+header{padding:14px 16px;border-bottom:1px solid #2a332e}
+h1{font-size:18px;margin:0 0 4px}
+.note{color:var(--mut);font-size:13px;line-height:1.6}
+main{padding:12px 16px;max-width:1000px;margin:0 auto}
+.btns{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
+button{background:var(--card);color:var(--fg);border:1px solid #33403a;border-radius:10px;padding:10px 14px;font-size:15px;cursor:pointer}
+button.main{background:var(--acc);color:#0b130e;border:none;font-weight:700}
+button:disabled{opacity:.4;cursor:default}
+#sum{font-size:16px;font-weight:700;margin:8px 0}
+pre{background:#0b0f0d;border:1px solid #2a332e;border-radius:10px;padding:12px;min-height:50vh;max-height:65vh;overflow:auto;font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-all}
+.ok{color:var(--ok)}.ng{color:var(--ng);font-weight:700}.wn{color:var(--wn)}.hd{color:#8fc7ff}
+</style>
+</head>
+<body>
+<header>
+<h1>GSR400 ロガー 配線・信号チェック（USB）</h1>
+<div class="note">パソコンのChrome（またはEdge）で開き、Pico 2 WをUSBでつないで「接続」を押します。一覧から「Pico」や「USB シリアル」を選んでください。<br>
+チェックが終わったらUSBを抜くだけで、そのままスマホ（Bluefy）でロガー・A/F計として使えます。</div>
+</header>
+<main>
+<div class="btns">
+<button class="main" id="con">接続</button>
+<button data-c="a" disabled>全項目チェック</button>
+<button data-c="t" disabled>回転数テスト（10秒）</button>
+<button data-c="s" disabled>microSDテスト</button>
+<button data-c="p" disabled>ポンプ特性テスト</button>
+<button data-c="w" disabled>連続表示 ON/OFF</button>
+<button data-c="i" disabled>I2Cスキャン</button>
+<button id="clr">表示を消す</button>
+<button id="save">結果を保存</button>
+</div>
+<div id="sum" class="note">未接続</div>
+<pre id="out"></pre>
+</main>
+<script>
+const out=document.getElementById('out'), sum=document.getElementById('sum');
+let port=null, writer=null, buf='', log='';
+if(!('serial' in navigator)){sum.textContent='このブラウザはUSBシリアルに対応していません。パソコンのChromeかEdgeで開いてください（iPhone・Androidは不可）。';sum.className='ng';document.getElementById('con').disabled=true;}
+function esc(s){return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function addLine(l){
+  log+=l+'\n';
+  let cls='';
+  if(/^\[NG/.test(l))cls='ng';else if(/^\[注意/.test(l))cls='wn';else if(/^\[OK/.test(l))cls='ok';else if(/^(---|=====)/.test(l))cls='hd';
+  const m=l.match(/^結果：NG (\d+)件、注意 (\d+)件/);
+  if(m){sum.textContent=l;sum.className=(+m[1]>0)?'ng':(+m[2]>0?'wn':'ok');}
+  const atBottom=out.scrollTop+out.clientHeight>=out.scrollHeight-20;
+  out.insertAdjacentHTML('beforeend',cls?'<span class="'+cls+'">'+esc(l)+'</span>\n':esc(l)+'\n');
+  if(atBottom)out.scrollTop=out.scrollHeight;
+}
+async function send(c){if(writer)await writer.write(new TextEncoder().encode(c+'\n'));}
+document.querySelectorAll('button[data-c]').forEach(b=>b.onclick=()=>send(b.dataset.c));
+document.getElementById('clr').onclick=()=>{out.innerHTML='';log='';};
+document.getElementById('save').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([log],{type:'text/plain'}));a.download='GSR400_check_'+new Date().toISOString().slice(0,16).replace(/[:T]/g,'-')+'.txt';a.click();};
+document.getElementById('con').onclick=async()=>{
+  try{
+    port=await navigator.serial.requestPort();
+    await port.open({baudRate:115200});
+    await port.setSignals({dataTerminalReady:true});
+    writer=port.writable.getWriter();
+    document.querySelectorAll('button[data-c]').forEach(b=>b.disabled=false);
+    document.getElementById('con').disabled=true;
+    sum.textContent='接続しました。自動で全項目チェックを行います…';sum.className='note';
+    setTimeout(()=>send('a'),1500);
+    const reader=port.readable.pipeThrough(new TextDecoderStream()).getReader();
+    while(true){
+      const {value,done}=await reader.read(); if(done)break;
+      buf+=value; let i;
+      while((i=buf.indexOf('\n'))>=0){addLine(buf.slice(0,i).replace(/\r$/,''));buf=buf.slice(i+1);}
+    }
+  }catch(e){sum.textContent='切断されました（'+e.message+'）。USBを抜いた場合は、そのままスマホで使えます。';sum.className='wn';
+    document.querySelectorAll('button[data-c]').forEach(b=>b.disabled=true);document.getElementById('con').disabled=false;writer=null;}
+};
+</script>
+</body>
+</html>
