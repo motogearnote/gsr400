@@ -80,6 +80,12 @@ td.cur{outline:3px solid #fff;outline-offset:-3px}
     <div class="note">補正係数：エンジン停止でセンサーが大気中にあり「測定中」が20秒続くと、電源を入れるたびに自動で合わせて保存します。手で入れる場合はここに入力</div>
     <input id="scl" type="number" step="0.01" min="0.25" max="1.5" placeholder="例：0.40">
     <button class="btn" onclick="cmd('scale='+document.getElementById('scl').value)">補正係数を保存</button>
+    <div class="note">ヒーターの制御方法：今のセンサー（互換品）は「電圧固定」。本物のBosch LSU4.9に替えたら「Ri制御」</div>
+    <select id="hmv" style="width:100%;padding:10px;font-size:16px;border-radius:10px"><option value="1">電圧固定（互換センサー）</option><option value="0">Ri制御（本物 LSU4.9）</option></select>
+    <button class="btn" onclick="cmd('hmode='+document.getElementById('hmv').value)">ヒーターの制御方法を保存</button>
+    <div class="note">電圧固定のときのヒーター電圧（7〜11V、標準8.5V）</div>
+    <input id="hfv" type="number" step="0.5" min="7" max="11" placeholder="8.5">
+    <button class="btn" onclick="cmd('hfix='+document.getElementById('hfv').value)">ヒーター電圧を保存</button>
     <div class="note">ポンプ制御の強さ：走行中に「ポンプ張り付き」が多いときは弱めにする</div>
     <select id="pgv" style="width:100%;padding:10px;font-size:16px;border-radius:10px"><option value="1">標準</option><option value="0.5">弱め（1/2）</option><option value="0.25">さらに弱め（1/4）</option><option value="2">強め（2倍）</option></select>
     <button class="btn" onclick="cmd('pgain='+document.getElementById('pgv').value)">ポンプ制御の強さを保存</button>
@@ -106,7 +112,7 @@ const STATES=['INIT','CONDENSE','RAMP','RUN','FAULT'];
 const MSG={OK_TPS_CLOSED:'全閉を保存しました',OK_TPS_WOT:'全開を保存しました',OK_PPR:'パルス数を保存しました',NG_PPR:'0.5〜8 の範囲で入れてください',
   OK_CAL_START:'校正を始めました（2秒）',NG_CAL_NOTREADY:'センサーが「測定中」になってから押してください',OK_CAL_DONE:'フリーエア校正を保存しました',
   NG_CAL_RANGE:'校正値が範囲外です（配線か暖機を確認）',OK_RESET:'センサー制御を再起動しました',OK_CLEARMAP:'マップを消去しました',
-  OK_CLEARMAP_NOSD:'消去しました（microSDに保存できません）',NG_UNKNOWN:'不明なコマンドです',OK_CAL_DONE_SD:'フリーエア校正をmicroSDと本体に保存しました（次回から不要です）',OK_SWEEP_START:'ポンプ特性テストを始めました（約30秒）',OK_SWEEP_END:'ポンプ特性テストが終わりました',NG_SWEEP_NOTRUN:'状態がRUNになってから押してください',NG_SWEEP_ABORT:'テストが中断されました（センサーの状態が変わりました）',OK_AUTOCAL:'補正係数を自動で合わせて保存しました',NG_AUTOCAL:'自動校正の計算値が範囲外でした（配線・センサーを確認）',OK_SCALE:'補正係数を保存しました',NG_SCALE:'0.25〜1.5の範囲で入れてください',OK_RS:'R25の値を保存しました（センサー制御を再起動します）',NG_RS:'20〜200Ωの範囲で選んでください',OK_PGAIN:'ポンプ制御の強さを保存しました',NG_PGAIN:'0.1〜4の範囲で選んでください',OK_HEAT:'エンジン停止のまま暖機を始めました（校正が終わったら本体の電源を切ってください）',OK_PUMPDIR_P:'ポンプの向きを +1 にして再起動しました',OK_PUMPDIR_M:'ポンプの向きを -1 にして再起動しました'};
+  OK_CLEARMAP_NOSD:'消去しました（microSDに保存できません）',NG_UNKNOWN:'不明なコマンドです',OK_CAL_DONE_SD:'フリーエア校正をmicroSDと本体に保存しました（次回から不要です）',OK_SWEEP_START:'ポンプ特性テストを始めました（約30秒）',OK_SWEEP_END:'ポンプ特性テストが終わりました',NG_SWEEP_NOTRUN:'状態がRUNになってから押してください',NG_SWEEP_ABORT:'テストが中断されました（センサーの状態が変わりました）',OK_HMODE_FIX:'ヒーターを電圧固定にしました（センサー制御を再起動）',OK_HMODE_RI:'ヒーターをRi制御にしました（センサー制御を再起動）',NG_HMODE:'0か1を選んでください',OK_HFIX:'ヒーター電圧を保存しました',NG_HFIX:'7〜11Vで入れてください',OK_AUTOCAL:'補正係数を自動で合わせて保存しました',NG_AUTOCAL:'自動校正の計算値が範囲外でした（配線・センサーを確認）',OK_SCALE:'補正係数を保存しました',NG_SCALE:'0.25〜1.5の範囲で入れてください',OK_RS:'R25の値を保存しました（センサー制御を再起動します）',NG_RS:'20〜200Ωの範囲で選んでください',OK_PGAIN:'ポンプ制御の強さを保存しました',NG_PGAIN:'0.1〜4の範囲で選んでください',OK_HEAT:'エンジン停止のまま暖機を始めました（校正が終わったら本体の電源を切ってください）',OK_PUMPDIR_P:'ポンプの向きを +1 にして再起動しました',OK_PUMPDIR_M:'ポンプの向きを -1 にして再起動しました'};
 const $=id=>document.getElementById(id);
 let dev=null, chCmd=null, wantConnected=false, map=[...Array(RPM_N)].map(()=>Array(TPS_N).fill(null));
 let last={}, cnt=0, rate=0, cur={r:-1,c:-1};
