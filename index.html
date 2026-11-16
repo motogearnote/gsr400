@@ -107,7 +107,8 @@ td.cur{outline:3px solid #fff;outline-offset:-3px}
 const SVC='6a4e0001-6c2b-4f3a-9d1e-475352343030', LIVE='6a4e0002-6c2b-4f3a-9d1e-475352343030',
       MAP='6a4e0003-6c2b-4f3a-9d1e-475352343030', CMD='6a4e0004-6c2b-4f3a-9d1e-475352343030',
       RESP='6a4e0005-6c2b-4f3a-9d1e-475352343030';
-const RPM_MIN=1000, RPM_STEP=500, RPM_N=27, TPS_STEP=5, TPS_N=21;
+const RPM_MIN=1000, RPM_STEP=500, RPM_N=27;
+const TPS_BINS=[0,2,5,10,15,20,30,40,60,80,100], TPS_N=TPS_BINS.length;
 const STATES=['INIT','CONDENSE','RAMP','RUN','FAULT'];
 const MSG={OK_TPS_CLOSED:'全閉を保存しました',OK_TPS_WOT:'全開を保存しました',OK_PPR:'パルス数を保存しました',NG_PPR:'0.5〜8 の範囲で入れてください',
   OK_CAL_START:'校正を始めました（2秒）',NG_CAL_NOTREADY:'センサーが「測定中」になってから押してください',OK_CAL_DONE:'フリーエア校正を保存しました',
@@ -203,7 +204,7 @@ function onLive(v){
   $('vset').innerHTML=d.sat?'<span class="ng">'+d.vset.toFixed(2)+'（張り付き）</span>':d.vset.toFixed(2); $('dir').textContent=d.dir>0?'+1':'-1';
   if(document.activeElement!==$('ppr')) $('ppr').value=d.ppr;
   // 今の位置に記録された値はその場でマップにも反映する
-  // 本体が今のマスに記録した値をマップにも反映する（記録は本体側で0.4秒ごとの平均）
+  // 本体が今のマスに記録した値をマップにも反映する（記録は本体側で同じマスに60ms滞在した区間の平均）
   if(d.rec&&d.cr>=0&&d.cc>=0&&map[d.cr][d.cc]!==d.rec){map[d.cr][d.cc]=d.rec;drawCell(d.cr,d.cc);}
   if(d.cr!==cur.r||d.cc!==cur.c){const o=document.querySelector('td.cur');if(o)o.classList.remove('cur');
     const n=$('c'+d.cr+'_'+d.cc);if(n)n.classList.add('cur');cur={r:d.cr,c:d.cc};}
@@ -211,17 +212,19 @@ function onLive(v){
 setInterval(()=>{rate=cnt;cnt=0;if(chCmd&&$('cfg').classList.contains('on'))cmd('diag');},1000);  // 設定画面を開いている間だけ診断値を取る
 
 function onMap(v){
+  if(v.byteLength<2)return;
   const r=v.getUint8(0), c0=v.getUint8(1);
+  if(r>=RPM_N||c0>=TPS_N||c0+v.byteLength-2>TPS_N)return;
   for(let i=2;i<v.byteLength;i++){const x=v.getUint8(i);map[r][c0+i-2]=x?x/10:null;drawCell(r,c0+i-2);}
 }
 function buildTable(){
-  let h='<thead><tr><th>rpm＼%</th>';for(let c=0;c<TPS_N;c++)h+='<th>'+c*TPS_STEP+'</th>';h+='</tr></thead><tbody>';
+  let h='<thead><tr><th>rpm＼%</th>';for(let c=0;c<TPS_N;c++)h+='<th>'+TPS_BINS[c]+'</th>';h+='</tr></thead><tbody>';
   for(let r=RPM_N-1;r>=0;r--){h+='<tr><th>'+(RPM_MIN+r*RPM_STEP)+'</th>';for(let c=0;c<TPS_N;c++)h+='<td id="c'+r+'_'+c+'"></td>';h+='</tr>';}
   $('tbl').innerHTML=h+'</tbody>';
 }
 function drawCell(r,c){const e=$('c'+r+'_'+c);if(!e)return;const a=map[r][c];e.textContent=a==null?'':a.toFixed(1);e.style.background=col(a);e.style.color=a==null?'':'#000';}
 function downloadCsv(){
-  let s='RPM\\TPS%';for(let c=0;c<TPS_N;c++)s+=','+c*TPS_STEP;s+='\r\n';
+  let s='RPM\\TPS%';for(let c=0;c<TPS_N;c++)s+=','+TPS_BINS[c];s+='\r\n';
   for(let r=0;r<RPM_N;r++){s+=RPM_MIN+r*RPM_STEP;for(let c=0;c<TPS_N;c++)s+=','+(map[r][c]==null?'':map[r][c].toFixed(1));s+='\r\n';}
   const f=new File([s],'AFRMAP.CSV',{type:'text/csv'});
   if(navigator.canShare&&navigator.canShare({files:[f]})){navigator.share({files:[f]}).catch(()=>{});return;}
