@@ -39,7 +39,7 @@ td.cur{outline:3px solid #fff;outline-offset:-3px}
 #connect{position:fixed;inset:0;background:rgba(10,14,12,.96);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;z-index:9;text-align:center}
 #connect.hide{display:none}#connect h1{font-size:22px;margin:0}#connect .btn{max-width:320px}
 #toast{position:fixed;left:12px;right:12px;bottom:max(16px,env(safe-area-inset-bottom));background:#26332c;border:1px solid var(--line);border-radius:10px;padding:12px;font-size:15px;display:none;z-index:8}
-#af-indicator{display:grid;grid-template-columns:repeat(15,minmax(0,1fr));gap:3px;margin:8px 0 14px}#af-indicator span{height:14px;border-radius:3px;opacity:.35}#af-indicator span.active{opacity:1;outline:2px solid #fff;outline-offset:1px}
+#af-indicator{display:grid;grid-template-columns:repeat(15,minmax(0,1fr));gap:3px;margin:8px 0 14px}#af-indicator span{height:14px;border-radius:3px;opacity:1}#af-indicator span.active{opacity:1;outline:2px solid #fff;outline-offset:1px}
 </style></head><body>
 <div id="connect">
   <h1>GSR400 Logger</h1>
@@ -60,7 +60,7 @@ td.cur{outline:3px solid #fff;outline-offset:-3px}
 </section>
 <section id="map" class="tab">
   <div class="note">縦＝回転数、横＝スロットル開度。マスの数字は、その条件で最後に記録した空燃比です（本体のmicroSDの AFRMAP.CSV に自動保存）。白枠は今の位置。</div>
-  <div class="legend"><span style="background:#e53935">RICH・濃い</span><span style="background:#a8d85b">中間</span><span style="background:#5754cd">LEAN・薄い</span></div><div class="note">AF9.8未満＝RICH、AF35.2以上＝LEAN。15段階の色はライブ表示と共通です。現行本体のBluetoothマップ転送は最大25.5までのため、マップの高AF値対応は本体更新時に追加します。</div>
+  <div class="legend" style="display:block"><div style="height:16px;border-radius:5px;background:linear-gradient(to right,hsl(0,80%,55%),hsl(60,80%,55%),hsl(120,80%,55%),hsl(180,80%,55%),hsl(240,80%,55%))"></div><div style="display:flex;justify-content:space-between;margin-top:5px"><b>RICH・濃い（赤）</b><b>LEAN・薄い（青）</b></div></div><div class="note">AF9.8未満＝RICH、AF35.2以上＝LEAN。AFが高くなるにつれて赤→黄→緑→水色→青へ連続して変化します。ライブ表示は同じグラデーションを15段階で表示します。現行本体のBluetoothマップ転送は最大25.5までのため、マップの高AF値対応は本体更新時に追加します。</div>
   <div class="mapwrap"><table id="tbl"></table></div>
   <button class="btn" onclick="reqMap()">最新のマップを読み込む</button>
   <button class="btn acc" onclick="downloadCsv()">CSVを保存</button>
@@ -107,9 +107,11 @@ document.querySelectorAll('header button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('on',t.id===b.dataset.t));
   if(b.dataset.t==='map') reqMap();});
 function toast(t){const e=$('toast');e.textContent=t;e.style.display='block';clearTimeout(toast.h);toast.h=setTimeout(()=>e.style.display='none',2500);}
-const AF_PALETTE=['#e53935','#ef5350','#f26b45','#f58b3c','#f8ab35','#f5ca3c','#dce451','#a8d85b','#72cd83','#48c4a5','#3dbbbb','#36a9cf','#438cde','#4e6dd8','#5754cd'];
+function afRatio(a){return Math.max(0,Math.min(1,(a-9.8)/(35.2-9.8)));}
+function afColor(a){return 'hsl('+(240*afRatio(a)).toFixed(2)+', 80%, 55%)';}
+const AF_PALETTE=Array.from({length:15},(_,i)=>afColor(9.8+(35.2-9.8)*i/14));
 function afBand(a){return Math.max(0,Math.min(14,Math.floor((a-9.8)/(35.2-9.8)*15)));}
-function col(a){return a==null?'':AF_PALETTE[afBand(a)];}
+function col(a){return a==null?'':afColor(a);}
 function afText(a){return a<9.8?'RICH':a>=35.2?'LEAN':a.toFixed(1);}
 function drawIndicator(a){$('af-indicator').querySelectorAll('span').forEach((e,i)=>e.classList.toggle('active',a!=null&&i===afBand(a)));$('af-indicator').setAttribute('aria-label',a==null?'空燃比未測定':'空燃比 '+afText(a));}
 
