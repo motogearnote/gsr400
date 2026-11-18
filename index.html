@@ -76,13 +76,15 @@ td.cur{outline:3px solid #fff;outline-offset:-3px}
     <button class="btn" onclick="cmd('ppr='+document.getElementById('ppr').value)">保存</button></div>
   <div class="set"><h3>A/Fセンサーの状態</h3><div class="note">状態：<b id="sens">-</b>　Ri：<b id="ri">-</b>Ω　バッテリー：<b id="vb">-</b>V<br>Un <b id="un">-</b>V　Ip <b id="ip">-</b>mA　ポンプ <b id="vset">-</b>V　向き <b id="dir">-</b>　ヒーター <b id="hv">-</b>V<br>補正係数：<b id="calst">-</b></div></div>
   <div class="set"><h3>遅延時間の自動推定</h3>
+    <p class="st" style="font-size:18px">収集状態：<b id="auto-mode">接続待ち</b></p>
     <div class="note">TPS操作からAFが反応するまでの候補を集め、似た条件で6回以上そろった場合に参考値を提示します。補正値は「確認して適用」を押すまで変更しません。操作・確認は停車中に行ってください。</div>
     <p>推奨補正時間：<b id="auto-value">—</b><br>推定の信頼度：<b id="auto-quality">データ不足</b><br>同条件の候補：<b id="auto-count">0</b>回<br>観測条件：<b id="auto-condition">—</b></p>
+    <div class="note" id="auto-status" role="status" aria-live="polite">接続後、本体の自動推定への対応を確認します。</div>
     <button class="btn" id="auto-start" onclick="autoCommand('al=start')" disabled>推定を開始（候補をリセット）</button>
     <button class="btn" id="auto-stop" onclick="autoCommand('al=stop')" disabled>推定を停止</button>
     <button class="btn" id="auto-read" onclick="autoCommand('al?')" disabled>本体から候補を読み直す</button>
     <button class="btn acc" id="auto-apply" onclick="applyAutoLag()" disabled>推定値を確認して適用</button>
-    <div class="note" id="auto-status" role="status" aria-live="polite">接続後、本体の自動推定への対応を確認します。</div>
+    
     <div class="note">信頼度は候補のばらつきの目安です。AF反応には燃調変化も含まれ、正確なセンサー遅延や全運転域への適合は未確認です。iPhone切断後も収集は続き、未適用の候補は本体の電源OFFで消えます。</div></div>
   <div class="set"><h3>排気・センサーの遅延補正</h3>
     <div class="note">AF値を、指定した時間だけ前の回転数・TPSに対応づけてマップへ記録します。ライブのAF値とCSV形式は変わりません。<br>例：200ms＝0.2秒前の回転数・TPSへ対応づけ。適正値は未測定のため、初期値は0ms（補正なし）です。変更はエンジン停止中に行ってください。既存のマップは補正し直しません。</div>
@@ -182,6 +184,7 @@ function autoControls(){
 function finishAutoRequest(ok){const done=autoResolve;autoResolve=null;if(done)done(ok);}
 function resetAutoSetting(message){
   clearTimeout(autoTimer);finishAutoRequest(false);autoSupported=false;autoPending=null;autoResult=null;
+  $('auto-mode').textContent=chCmd?'未確認':'未接続';$('auto-mode').className='wn';
   autoControls();$('auto-status').textContent=message;$('auto-value').textContent='—';$('auto-quality').textContent='データ不足';$('auto-count').textContent='0';$('auto-condition').textContent='—';
 }
 function autoTimeout(){resetAutoSetting('応答を確認できませんでした。本体の対応を確認して、読み直してください。現在の補正値は変更していません。');}
@@ -197,11 +200,12 @@ function handleAutoResponse(text){
     if(result.count>24||result.ms>1500||result.rpm>14000||result.tps>100||result.quality===2&&(result.count<6||result.ms<40||result.ms%10))return false;
     if(autoPending==='al=stop'&&result.active||autoPending==='al=start'&&!result.active)return true;
     clearTimeout(autoTimer);autoPending=null;autoSupported=true;autoResult=result;
+    $('auto-mode').textContent=result.active?'候補収集中':'停止中';$('auto-mode').className=result.active?'ok':'';
     $('auto-value').textContent=result.quality===2?result.ms+'ms':'—';
     $('auto-count').textContent=result.count;
     $('auto-quality').textContent=result.quality===2?'参考・ばらつき小':result.quality===1?'低・ばらつき大':'データ不足';
     $('auto-condition').textContent=result.count?result.rpm+'rpm・操作前TPS '+result.tps+'%付近':'—';
-    $('auto-status').textContent=(result.active?'候補を収集中。':'収集は停止中。')+(result.quality===2?'参考値を確認して適用できます。':'条件のそろった候補が6回以上必要です。')+' 現在の補正値は自動では変わりません。';
+    $('auto-status').textContent=(result.active&&!last.valid?'有効なAF測定を待っています。候補はまだ増えません。':result.quality===2?'参考値を確認して適用できます。':'条件のそろった候補が6回以上必要です。')+' 現在の補正値は自動では変わりません。';
     autoControls();finishAutoRequest(true);return true;
   }
   if(text==='NG_UNKNOWN'&&autoPending){resetAutoSetting('この本体は自動推定に未対応です。対応プログラムへの更新が必要です。');return true;}
