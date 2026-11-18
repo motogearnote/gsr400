@@ -195,6 +195,7 @@ function handleAutoResponse(text){
   if(m){
     const result={count:parseInt(m[1],16),ms:parseInt(m[2],16),quality:Number(m[3]),active:m[4]==='1',rpm:parseInt(m[5],16)*500,tps:parseInt(m[6],16)*5};
     if(result.count>24||result.ms>1500||result.rpm>14000||result.tps>100||result.quality===2&&(result.count<6||result.ms<40||result.ms%10))return false;
+    if(autoPending==='al=stop'&&result.active||autoPending==='al=start'&&!result.active)return true;
     clearTimeout(autoTimer);autoPending=null;autoSupported=true;autoResult=result;
     $('auto-value').textContent=result.quality===2?result.ms+'ms':'—';
     $('auto-count').textContent=result.count;
@@ -212,7 +213,7 @@ async function applyAutoLag(){
   const candidate=autoResult.ms;
   if(!confirm('推定値 '+candidate+'msを本体に保存しますか？\n同条件での反応時間から得た参考値です。正確な遅延時間や全運転域への適合は未確認です。\n既存のマップは補正し直しません。'))return;
   if(!await autoCommand('al=stop'))return;
-  if(autoResult?.quality!==2||autoResult.ms!==candidate){toast('推定値が変わりました。表示を確認してから適用してください');return;}
+  if(autoResult?.active||autoResult?.quality!==2||autoResult.ms!==candidate){toast('推定結果が変わりました。表示を確認してから適用してください');return;}
   $('lag-ms').value=String(candidate);await saveLagSetting();
 }
 
