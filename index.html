@@ -75,6 +75,15 @@ td.cur{outline:3px solid #fff;outline-offset:-3px}
     <input id="ppr" type="number" inputmode="decimal" step="0.5" min="0.5" max="8">
     <button class="btn" onclick="cmd('ppr='+document.getElementById('ppr').value)">保存</button></div>
   <div class="set"><h3>A/Fセンサーの状態</h3><div class="note">状態：<b id="sens">-</b>　Ri：<b id="ri">-</b>Ω　バッテリー：<b id="vb">-</b>V<br>Un <b id="un">-</b>V　Ip <b id="ip">-</b>mA　ポンプ <b id="vset">-</b>V　向き <b id="dir">-</b>　ヒーター <b id="hv">-</b>V<br>補正係数：<b id="calst">-</b></div></div>
+  <div class="set"><h3>遅延時間の自動推定</h3>
+    <div class="note">TPS操作からAFが反応するまでの候補を集め、似た条件で6回以上そろった場合に参考値を提示します。補正値は「確認して適用」を押すまで変更しません。操作・確認は停車中に行ってください。</div>
+    <p>推奨補正時間：<b id="auto-value">—</b><br>推定の信頼度：<b id="auto-quality">データ不足</b><br>同条件の候補：<b id="auto-count">0</b>回<br>観測条件：<b id="auto-condition">—</b></p>
+    <button class="btn" id="auto-start" onclick="autoCommand('al=start')" disabled>推定を開始（候補をリセット）</button>
+    <button class="btn" id="auto-stop" onclick="autoCommand('al=stop')" disabled>推定を停止</button>
+    <button class="btn" id="auto-read" onclick="autoCommand('al?')" disabled>本体から候補を読み直す</button>
+    <button class="btn acc" id="auto-apply" onclick="applyAutoLag()" disabled>推定値を確認して適用</button>
+    <div class="note" id="auto-status" role="status" aria-live="polite">接続後、本体の自動推定への対応を確認します。</div>
+    <div class="note">信頼度は候補のばらつきの目安です。AF反応には燃調変化も含まれ、正確なセンサー遅延や全運転域への適合は未確認です。iPhone切断後も収集は続き、未適用の候補は本体の電源OFFで消えます。</div></div>
   <div class="set"><h3>排気・センサーの遅延補正</h3>
     <div class="note">AF値を、指定した時間だけ前の回転数・TPSに対応づけてマップへ記録します。ライブのAF値とCSV形式は変わりません。<br>例：200ms＝0.2秒前の回転数・TPSへ対応づけ。適正値は未測定のため、初期値は0ms（補正なし）です。変更はエンジン停止中に行ってください。既存のマップは補正し直しません。</div>
     <label for="lag-ms">補正時間（0〜2000ms・10ms単位）</label><input id="lag-ms" type="number" inputmode="numeric" min="0" max="2000" step="10" value="0" disabled>
@@ -140,13 +149,13 @@ function lagControls(enabled){$('lag-ms').disabled=!enabled;$('lag-save').disabl
 function resetLagSetting(message){settleLagRead();clearTimeout(lagTimer);lagSupported=false;lagPending=null;lagControls(false);$('lag-status').textContent=message;}
 function lagTimeout(){settleLagRead();const saving=lagPending==='save';lagPending=null;lagSupported=false;lagControls(false);$('lag-status').textContent=saving?'保存結果を確認できませんでした。読み直して本体の値を確認してください。':'本体から応答がありません。対応プログラムへの更新後、読み直してください。';}
 async function readLagSetting(){
-  if(!chCmd||lagPending)return;
+  if(!chCmd||lagPending||autoPending)return;
   lagSupported=false;lagPending='read';lagControls(false);$('lag-status').textContent='本体の設定を確認中…';
   return new Promise(resolve=>{lagResolve=resolve;lagTimer=setTimeout(lagTimeout,4000);cmd('lag?').then(ok=>{if(!ok){clearTimeout(lagTimer);lagTimeout();}});});
 }
 async function saveLagSetting(){
   const text=$('lag-ms').value.trim(),value=Number(text);
-  if(!lagSupported||lagPending||!chCmd)return;
+  if(!lagSupported||lagPending||autoPending||!chCmd)return;
   if(!/^\d+$/.test(text)||!Number.isInteger(value)||value<0||value>2000||value%10){toast('0〜2000msを10ms単位で入力してください');return;}
   if(last.rpm>400){toast('エンジンを停止してから保存してください');return;}
   lagPending='save';lagControls(false);$('lag-status').textContent='本体への保存を確認中…';lagTimer=setTimeout(lagTimeout,4000);
@@ -159,6 +168,52 @@ function handleLagResponse(t){
     const unsupported=t==='NG_UNKNOWN';settleLagRead();clearTimeout(lagTimer);lagPending=null;lagSupported=!unsupported;lagControls(lagSupported);
     $('lag-status').textContent=unsupported?'この本体は遅延補正に未対応です。本体プログラムの更新が必要です。':t==='NG_LAG_ENGINE'?'エンジンを停止してから保存してください。':t==='NG_LAG_RANGE'?'0〜2000msを10ms単位で入力してください。':'本体への保存に失敗しました。設定を読み直してください。';return true;
   }return false;
+}
+
+let autoSupported=false, autoPending=null, autoTimer=null, autoResolve=null, autoResult=null, autoTick=0;
+function autoControls(){
+  const ready=!!chCmd&&autoSupported&&!autoPending&&!lagPending;
+  $('auto-start').disabled=!ready||!!autoResult?.active;
+  $('auto-stop').disabled=!ready||!autoResult?.active;
+  $('auto-read').disabled=!chCmd||!!autoPending||!!lagPending;
+  $('auto-apply').disabled=!ready||!lagSupported||autoResult?.quality!==2||last.rpm>400;
+  $('lag-save').disabled=!lagSupported||!!lagPending||!!autoPending;
+}
+function finishAutoRequest(ok){const done=autoResolve;autoResolve=null;if(done)done(ok);}
+function resetAutoSetting(message){
+  clearTimeout(autoTimer);finishAutoRequest(false);autoSupported=false;autoPending=null;autoResult=null;
+  autoControls();$('auto-status').textContent=message;$('auto-value').textContent='—';$('auto-quality').textContent='データ不足';$('auto-count').textContent='0';$('auto-condition').textContent='—';
+}
+function autoTimeout(){resetAutoSetting('応答を確認できませんでした。本体の対応を確認して、読み直してください。現在の補正値は変更していません。');}
+async function autoCommand(command='al?',quiet=false){
+  if(!chCmd||autoPending||lagPending)return false;
+  autoPending=command;autoControls();if(!quiet)$('auto-status').textContent='本体の応答を確認中…';
+  return new Promise(resolve=>{autoResolve=resolve;autoTimer=setTimeout(autoTimeout,4000);cmd(command).then(ok=>{if(!ok)autoTimeout();});});
+}
+function handleAutoResponse(text){
+  const m=/^AE([0-9A-F]{2})([0-9A-F]{4})([0-2])([01])([0-9A-F]{2})([0-9A-F]{2})$/.exec(text);
+  if(m){
+    const result={count:parseInt(m[1],16),ms:parseInt(m[2],16),quality:Number(m[3]),active:m[4]==='1',rpm:parseInt(m[5],16)*500,tps:parseInt(m[6],16)*5};
+    if(result.count>24||result.ms>1500||result.rpm>14000||result.tps>100||result.quality===2&&(result.count<6||result.ms<40||result.ms%10))return false;
+    clearTimeout(autoTimer);autoPending=null;autoSupported=true;autoResult=result;
+    $('auto-value').textContent=result.quality===2?result.ms+'ms':'—';
+    $('auto-count').textContent=result.count;
+    $('auto-quality').textContent=result.quality===2?'参考・ばらつき小':result.quality===1?'低・ばらつき大':'データ不足';
+    $('auto-condition').textContent=result.count?result.rpm+'rpm・操作前TPS '+result.tps+'%付近':'—';
+    $('auto-status').textContent=(result.active?'候補を収集中。':'収集は停止中。')+(result.quality===2?'参考値を確認して適用できます。':'条件のそろった候補が6回以上必要です。')+' 現在の補正値は自動では変わりません。';
+    autoControls();finishAutoRequest(true);return true;
+  }
+  if(text==='NG_UNKNOWN'&&autoPending){resetAutoSetting('この本体は自動推定に未対応です。対応プログラムへの更新が必要です。');return true;}
+  return false;
+}
+async function applyAutoLag(){
+  if(!autoSupported||!lagSupported||autoPending||lagPending||autoResult?.quality!==2)return;
+  if(last.rpm>400){toast('エンジンを停止してから適用してください');return;}
+  const candidate=autoResult.ms;
+  if(!confirm('推定値 '+candidate+'msを本体に保存しますか？\n同条件での反応時間から得た参考値です。正確な遅延時間や全運転域への適合は未確認です。\n既存のマップは補正し直しません。'))return;
+  if(!await autoCommand('al=stop'))return;
+  if(autoResult?.quality!==2||autoResult.ms!==candidate){toast('推定値が変わりました。表示を確認してから適用してください');return;}
+  $('lag-ms').value=String(candidate);await saveLagSetting();
 }
 
 const isAndroid=/Android/i.test(navigator.userAgent);
@@ -196,6 +251,7 @@ async function open(){
   live.addEventListener('characteristicvaluechanged',e=>onLive(e.target.value));
   mp.addEventListener('characteristicvaluechanged',e=>onMap(e.target.value));
   rs.addEventListener('characteristicvaluechanged',e=>{const t=new TextDecoder().decode(e.target.value);
+    if(handleAutoResponse(t))return;
     if(handleLagResponse(t))return;
     if(t[0]==='S'&&/^S\d/.test(t))return;
     if(t[0]==='D'){const a=t.slice(1).split(' ').map(Number);$('un').textContent=(a[0]/1000).toFixed(3);$('ip').textContent=(a[1]/100).toFixed(2);$('hv').textContent=(a[2]/10).toFixed(1);
@@ -205,12 +261,15 @@ async function open(){
   await live.startNotifications(); await mp.startNotifications(); await rs.startNotifications();
   $('connect').classList.add('hide');
   keepAwake();
+  resetAutoSetting('本体の対応を確認します。');
   resetLagSetting('本体の設定を確認します。');
   await readLagSetting();
+  if(lagSupported)await autoCommand('al?');
+  else resetAutoSetting('対応する本体プログラムへの更新が必要です。');
   reqMap();
 }
 async function onDisc(){
-  chCmd=null;resetLagSetting('切断中です。再接続後に本体の値を読み直します。'); $('st').innerHTML='<span class="ng">切断されました。再接続中…</span>';
+  chCmd=null;resetAutoSetting('切断中です。再接続後に本体から読み直します。');resetLagSetting('切断中です。再接続後に本体の値を読み直します。'); $('st').innerHTML='<span class="ng">切断されました。再接続中…</span>';
   for(let i=0;i<30&&wantConnected;i++){            // 自動で再接続（範囲外に出たときなど）
     try{await open();return;}catch(e){await new Promise(r=>setTimeout(r,1000));}
   }
@@ -229,7 +288,7 @@ function onLive(v){
            valid:!!(v.getUint8(12)&1),air:!!(v.getUint8(12)&2),sd:!!(v.getUint8(12)&4),
            state:STATES[v.getUint8(13)]||'?',cr:v.getInt8(14),cc:v.getInt8(15),ppr:v.getUint8(16)/2,
            sat:v.byteLength>17&&!!(v.getUint8(17)&1),riout:v.byteLength>17&&!!(v.getUint8(17)&4),wait:v.byteLength>17&&!!(v.getUint8(17)&8),rich:v.byteLength>17&&!!(v.getUint8(17)&32),force:v.byteLength>17&&!!(v.getUint8(17)&16),rec:v.byteLength>19?v.getUint8(19)/10:null,dir:v.byteLength>17&&(v.getUint8(17)&2)?-1:1,vset:v.byteLength>18?v.getUint8(18)/80:0};
-  last=d; cnt++;
+  last=d; cnt++;autoControls();
   if(d.rpm===0&&!d.force)measuredThisRun=false;
   if(d.valid)measuredThisRun=true;
   const heating=!measuredThisRun&&!d.valid&&d.state!=='FAULT'&&!d.wait&&(d.rpm>400||d.force);
@@ -248,7 +307,7 @@ function onLive(v){
   if(d.cr!==cur.r||d.cc!==cur.c){const o=document.querySelector('td.cur');if(o)o.classList.remove('cur');
     const n=$('c'+d.cr+'_'+d.cc);if(n)n.classList.add('cur');cur={r:d.cr,c:d.cc};}
 }
-setInterval(()=>{rate=cnt;cnt=0;if(chCmd&&!lagPending&&$('cfg').classList.contains('on'))cmd('diag');},1000);  // 設定画面を開いている間だけ診断値を取る
+setInterval(()=>{rate=cnt;cnt=0;if(chCmd&&!lagPending&&!autoPending&&$('cfg').classList.contains('on')){if(autoSupported&&++autoTick%2===0)autoCommand('al?',true);else cmd('diag');}},1000);  // 設定画面を開いている間だけ診断値を取る
 
 function onMap(v){
   if(v.byteLength<2)return;
