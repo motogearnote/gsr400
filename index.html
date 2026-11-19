@@ -48,7 +48,7 @@ td.cur{outline:3px solid #fff;outline-offset:-3px}
   <button class="btn acc" id="cbtn">接続</button>
   <div class="note" id="nobt" style="display:none">このブラウザはBluetoothに対応していません。<br>iPhoneは無料アプリ「Bluefy」でこのページを開いてください。<br>AndroidはChrome（バージョン56以降）で開いてください。<br>※Bluetoothは https:// のページでしか使えません。</div>
 </div>
-<header><button class="on" data-t="live">ライブ</button><button data-t="map">A/Fマップ</button><button data-t="cfg">設定</button></header>
+<header><button class="on" data-t="live">ライブ</button><button data-t="map">A/Fマップ</button><button data-t="ride">ログ</button><button data-t="cfg">設定</button></header><div id="ride-banner" class="st ok" style="max-width:900px;margin:6px auto;padding:0 12px" hidden></div>
 <main>
 <section id="live" class="tab on">
   <div class="big"><div id="af-gauge"><svg id="af-indicator" viewBox="0 0 320 270" role="img" aria-label="空燃比の15段階メーター"></svg><div id="af-center"><div class="lbl">空燃比 A/F</div><span class="val" id="afr">--.-</span><div class="note">RICH ← → LEAN</div></div></div></div>
@@ -58,6 +58,15 @@ td.cur{outline:3px solid #fff;outline-offset:-3px}
   </div>
   <div class="st" id="st">未接続</div>
 </section>
+<section id="ride" class="tab"><div class="set"><h3>スマホ走行ログ</h3>
+  <p class="st">状態：<b id="ride-mode">一時保存を確認中</b><br>記録行数：<b id="ride-count">0</b></p>
+  <div class="note">走行前に記録を開始し、停車後に停止してCSV保存します。開始・停止・保存の操作は停車中に行ってください。マップとは別の時系列ログです。</div>
+  <button class="btn acc" id="ride-start" onclick="startRideLog()" disabled>走行ログの記録を開始</button>
+  <button class="btn" id="ride-stop" onclick="stopRideLog()" disabled>記録を停止</button>
+  <button class="btn acc" id="ride-save" onclick="saveRideLog()" disabled>走行ログCSVを保存・共有</button>
+  <div class="note" id="ride-status" role="status" aria-live="polite">記録なし</div>
+  <div class="note">最大60分。受信したライブ値（約20回/秒）と約1秒間隔の診断応答を記録します。時刻はスマホの受信時刻です。<br>画面ON・Bluefyを前面で使用してください。画面ロック・他アプリ使用中は受信が止まる場合があります。切断や受信の空白も記録します。<br>約5秒ごとにブラウザー内へ一時保存しますが、端末の都合で消えることがあります。停車後にCSVを「ファイル」へ保存し、保存先を確認してください。<br>現行本体では詳細な保護停止理由を送信していません。ポンプ張り付きフラグは異常停止後も残る場合があります。ログ保存は異常原因の解消を意味しません。</div>
+</div></section>
 <section id="map" class="tab">
   <div class="note">縦＝回転数、横＝スロットル開度。マスの数字は、その条件で最後に記録した空燃比です（本体のmicroSDの AFRMAP.CSV に自動保存）。白枠は今の位置。</div>
   <div class="legend" style="display:block"><div style="height:16px;border-radius:5px;background:linear-gradient(to right,hsl(0,80%,55%),hsl(60,80%,55%),hsl(120,80%,55%),hsl(180,80%,55%),hsl(240,80%,55%))"></div><div style="display:flex;justify-content:space-between;margin-top:5px"><b>RICH・濃い（赤）</b><b>LEAN・薄い（青）</b></div></div><div class="note">AF9.8未満＝RICH、AF35.2以上＝LEAN。AFが高くなるにつれて赤→黄→緑→水色→青へ連続して変化します。ライブ表示は同じグラデーションを15段階で表示します。現行本体のBluetoothマップ転送は最大25.5までのため、マップの高AF値対応は本体更新時に追加します。</div>
@@ -221,6 +230,133 @@ async function applyAutoLag(){
   $('lag-ms').value=String(candidate);await saveLagSetting();
 }
 
+/* RIDE_LOG_BEGIN */
+// Smartphone receive log. Independent of map recording and sensor control.
+const RIDE_MAX_MS=60*60*1000, RIDE_MAX_ROWS=80000;
+const RIDE_HEADER='received_utc,elapsed_ms,event,afr_valid,afr,rpm_display,tps_pct,tps_v,battery_v,ri_ohm,state,pump_saturated_flag,ri_out_flag,pump_setpoint_v,sd_ok,un_v,ip_ma,heater_v,diag_age_ms,live_hex,response_raw,note';
+const ride={active:false,busy:false,initializing:true,rows:[],wall:0,mono:0,lastLive:null,diag:null,db:null,persistent:false,stored:0,seq:0,session:'',chain:Promise.resolve(),message:'記録なし'};
+function rideCell(v){
+  if(v==null||typeof v==='number'&&!Number.isFinite(v))return '';
+  if(typeof v==='number')return String(v);
+  let s=String(v);if(/^[=+@-]/.test(s))s="'"+s;
+  return '"'+s.replace(/"/g,'""')+'"';
+}
+function rideRender(){
+  $('ride-start').disabled=!chCmd||ride.active||ride.busy||ride.initializing;
+  $('ride-stop').disabled=!ride.active||ride.busy;
+  $('ride-save').disabled=ride.active||ride.busy||!ride.rows.length;
+  $('ride-mode').textContent=ride.initializing?'一時保存を確認中':ride.busy?'保存を準備中':ride.active?'走行ログを記録中':ride.rows.length?'記録停止・CSV保存できます':'停止中';
+  $('ride-mode').className=ride.active?'ok':'';
+  $('ride-count').textContent=ride.rows.length;
+  $('ride-banner').hidden=!ride.active;
+  $('ride-banner').textContent='● 走行ログ記録中　'+ride.rows.length+'行';
+  $('ride-status').textContent=ride.message+(ride.rows.length&&!ride.persistent?' 一時保存が使えません。ページを閉じずにCSV保存してください。':'');
+}
+function rideMeta(){return {kind:'meta',version:1,session:ride.session,wall:ride.wall,active:ride.active,rows:ride.rows.length};}
+async function rideOpenDb(){
+  if(!('indexedDB' in window))return null;
+  return new Promise((resolve,reject)=>{
+    const request=indexedDB.open('GSR400PhoneRideLog',1);
+    request.onupgradeneeded=()=>{if(!request.result.objectStoreNames.contains('records'))request.result.createObjectStore('records');};
+    request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);
+    request.onblocked=()=>reject(new Error('storage blocked'));
+  });
+}
+function rideWrite(items,clear=false){return new Promise((resolve,reject)=>{
+  const tx=ride.db.transaction('records','readwrite'),store=tx.objectStore('records');
+  if(clear)store.clear();for(const [key,value] of items)store.put(value,key);
+  tx.oncomplete=()=>resolve();tx.onerror=tx.onabort=()=>reject(tx.error||new Error('storage failure'));
+});}
+function rideFlush(){
+  ride.chain=ride.chain.then(async()=>{
+    if(!ride.db||!ride.persistent||!ride.session)return;
+    const end=ride.rows.length,items=[['meta',rideMeta()]];
+    if(end>ride.stored)items.push(['chunk-'+String(ride.seq).padStart(6,'0'),{kind:'chunk',session:ride.session,seq:ride.seq,rows:ride.rows.slice(ride.stored,end)}]);
+    await rideWrite(items);ride.stored=end;ride.seq++;
+  }).catch(()=>{ride.persistent=false;rideRender();});
+  return ride.chain;
+}
+async function initRideLog(){
+  try{
+    ride.db=await rideOpenDb();ride.persistent=!!ride.db;
+    if(ride.db){
+      const values=await new Promise((resolve,reject)=>{const request=ride.db.transaction('records','readonly').objectStore('records').getAll();request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
+      const meta=values.find(v=>v.kind==='meta'&&v.version===1);
+      if(meta){
+        const chunks=values.filter(v=>v.kind==='chunk'&&v.session===meta.session&&Array.isArray(v.rows)).sort((a,b)=>a.seq-b.seq);
+        ride.rows=chunks.flatMap(c=>c.rows.filter(r=>typeof r==='string')).slice(0,RIDE_MAX_ROWS+2);
+        ride.wall=meta.wall;ride.session=meta.session;ride.stored=ride.rows.length;ride.seq=chunks.length?Math.max(...chunks.map(c=>c.seq))+1:0;
+        if(ride.rows.length)ride.message=meta.active?'前回の一時保存ログを復元しました。末尾数秒は残っていない可能性があります。CSV保存してください。':'前回の一時保存ログを復元しました。CSV保存できます。';
+      }
+    }
+  }catch(e){ride.persistent=false;ride.message='一時保存の確認ができませんでした。';}
+  ride.initializing=false;rideRender();
+}
+async function startRideLog(){
+  if(!chCmd||ride.active||ride.busy||ride.initializing)return;
+  if(ride.rows.length&&!confirm('前の走行ログを保存しましたか？新しい記録を開始すると、スマホ内の前の一時保存ログを置き換えます。'))return;
+  ride.busy=true;rideRender();await ride.chain;
+  ride.rows=[];ride.wall=Date.now();ride.mono=performance.now();ride.session=String(ride.wall);ride.stored=ride.seq=0;ride.lastLive=null;ride.diag=null;ride.active=true;
+  ride.message='画面ON・Bluefyを前面のまま使用してください。記録するのはスマホが受信したデータです。';
+  rideAppend('START',null,'','','phone_receive_log_v1');
+  if(ride.db){try{await rideWrite([['meta',rideMeta()]],true);ride.persistent=true;}catch(e){ride.persistent=false;}}
+  ride.busy=false;rideRender();keepAwake();
+}
+function rideAppend(event,data=null,hex='',response='',note=''){
+  const now=performance.now(),d=data||{},diag=ride.diag;
+  const row=[new Date().toISOString(),Math.max(0,Math.round(now-ride.mono)),event,
+    data?Number(d.valid):null,data&&d.valid?d.afr:null,d.rpm,d.tps,d.tpsv,d.vb,d.ri,d.state,
+    data?Number(d.sat):null,data?Number(d.riout):null,d.vset,data?Number(d.sd):null,
+    diag?.un,diag?.ip,diag?.heater,diag?Math.max(0,Math.round(now-diag.at)):null,hex,response,note];
+  ride.rows.push(row.map(rideCell).join(','));
+  if(ride.active&&ride.rows.length>=RIDE_MAX_ROWS)stopRideLog('行数上限で停止しました');
+}
+function rideOnLive(view,data){
+  if(!ride.active)return;
+  const now=performance.now();
+  if(now-ride.mono>=RIDE_MAX_MS){stopRideLog('60分の上限で停止しました');return;}
+  if(ride.lastLive!=null&&now-ride.lastLive>500)rideAppend('GAP',null,'','','no_live_ms='+Math.round(now-ride.lastLive));
+  if(!ride.active)return;
+  let hex='';for(let i=0;i<view.byteLength;i++)hex+=view.getUint8(i).toString(16).padStart(2,'0');
+  rideAppend('LIVE',data,hex);ride.lastLive=now;
+}
+function rideOnResponse(text){
+  if(!ride.active)return;
+  if(text[0]==='D'){
+    const values=text.slice(1).trim().split(/\s+/).map(Number);
+    if(values.length>=3){
+      const usable=(v,max)=>Number.isFinite(v)&&Math.abs(v)<=max?v:null;
+      const un=usable(values[0],10000),ip=usable(values[1],10000),heater=usable(values[2],200);
+      ride.diag={at:performance.now(),un:un==null?null:un/1000,ip:ip==null?null:ip/100,heater:heater==null?null:heater/10};
+    }
+  }
+  rideAppend('RESPONSE',null,'',text.slice(0,512));
+}
+function rideEvent(event,note=''){if(ride.active)rideAppend(event,null,'','',note);}
+async function stopRideLog(reason='停車後、CSV保存してください'){
+  if(!ride.active)return;
+  ride.active=false;ride.busy=true;rideAppend('STOP',null,'','',reason);ride.message=reason;rideRender();
+  await rideFlush();ride.busy=false;rideRender();
+}
+function rideCsv(){return '\uFEFF'+RIDE_HEADER+'\r\n'+ride.rows.join('\r\n')+'\r\n';}
+async function saveRideLog(){
+  if(ride.active||ride.busy||!ride.rows.length)return;
+  const name='GSR400_RIDE_'+new Date(ride.wall).toISOString().replace(/[:.]/g,'-')+'.csv';
+  const file=new File([rideCsv()],name,{type:'text/csv;charset=utf-8'});
+  if(navigator.canShare&&navigator.canShare({files:[file]})){
+    try{await navigator.share({files:[file]});ride.message='共有操作が完了しました。「ファイル」など選択した保存先を確認してください。';}
+    catch(e){ride.message=e.name==='AbortError'?'保存を取り消しました。ログは保持しています。':'共有できませんでした。ログは保持しています。';}
+  }else{
+    const a=document.createElement('a'),url=URL.createObjectURL(file);a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),60000);
+    ride.message='ダウンロードを要求しました。ブラウザーの保存先を確認してください。';
+  }
+  rideRender();
+}
+setInterval(()=>{if(ride.active&&!ride.busy)rideFlush();},5000);
+document.addEventListener('visibilitychange',()=>{rideEvent(document.visibilityState==='visible'?'VISIBLE':'HIDDEN','background reception is not guaranteed');if(document.visibilityState!=='visible')rideFlush();});
+window.addEventListener('pagehide',()=>rideFlush());
+
+/* RIDE_LOG_END */
 const isAndroid=/Android/i.test(navigator.userAgent);
 if(isAndroid)$('andro').style.display='block';
 if(!navigator.bluetooth){$('cbtn').style.display='none';$('nobt').style.display='block';}
@@ -241,7 +377,7 @@ $('cbtn').onclick=connect;
 async function connect(){
   try{
     dev=await navigator.bluetooth.requestDevice({filters:[{name:'GSR400'},{services:[SVC]}],optionalServices:[SVC]});
-    dev.addEventListener('gattserverdisconnected',onDisc);
+    dev.ongattserverdisconnected=onDisc;
     wantConnected=true; await open();
   }catch(e){
     if(e.name==='NotFoundError'&&/cancel/i.test(e.message)){$('cmsg').textContent='選択がキャンセルされました。もう一度「接続」を押してください。';return;}
@@ -253,18 +389,20 @@ async function open(){
   const s=await srv.getPrimaryService(SVC);
   const live=await s.getCharacteristic(LIVE), mp=await s.getCharacteristic(MAP), rs=await s.getCharacteristic(RESP);
   chCmd=await s.getCharacteristic(CMD);
-  live.addEventListener('characteristicvaluechanged',e=>onLive(e.target.value));
-  mp.addEventListener('characteristicvaluechanged',e=>onMap(e.target.value));
-  rs.addEventListener('characteristicvaluechanged',e=>{const t=new TextDecoder().decode(e.target.value);
+  live.oncharacteristicvaluechanged=e=>onLive(e.target.value);
+  mp.oncharacteristicvaluechanged=e=>onMap(e.target.value);
+  rs.oncharacteristicvaluechanged=e=>{const t=new TextDecoder().decode(e.target.value);
+    rideOnResponse(t);
     if(handleAutoResponse(t))return;
     if(handleLagResponse(t))return;
     if(t[0]==='S'&&/^S\d/.test(t))return;
     if(t[0]==='D'){const a=t.slice(1).split(' ').map(Number);$('un').textContent=(a[0]/1000).toFixed(3);$('ip').textContent=(a[1]/100).toFixed(2);$('hv').textContent=(a[2]/10).toFixed(1);
       if(a.length>=4){const src=t.trim().split(' ')[4]||'-';$('calst').textContent=src==='-'?'未校正（初回だけ行ってください）':'済み（係数 '+(a[3]/1000).toFixed(3)+'、'+(src==='S'?'microSDと本体に保存':'本体に保存・microSDなし')+'）';}
       return;}
-    toast(MSG[t]||t);});
+    toast(MSG[t]||t);};
   await live.startNotifications(); await mp.startNotifications(); await rs.startNotifications();
   $('connect').classList.add('hide');
+  rideEvent('RECONNECTED');rideRender();
   keepAwake();
   resetAutoSetting('本体の対応を確認します。');
   resetLagSetting('本体の設定を確認します。');
@@ -274,7 +412,8 @@ async function open(){
   reqMap();
 }
 async function onDisc(){
-  chCmd=null;resetAutoSetting('切断中です。再接続後に本体から読み直します。');resetLagSetting('切断中です。再接続後に本体の値を読み直します。'); $('st').innerHTML='<span class="ng">切断されました。再接続中…</span>';
+  rideEvent('DISCONNECTED');
+  chCmd=null;rideRender();resetAutoSetting('切断中です。再接続後に本体から読み直します。');resetLagSetting('切断中です。再接続後に本体の値を読み直します。'); $('st').innerHTML='<span class="ng">切断されました。再接続中…</span>';
   for(let i=0;i<30&&wantConnected;i++){            // 自動で再接続（範囲外に出たときなど）
     try{await open();return;}catch(e){await new Promise(r=>setTimeout(r,1000));}
   }
@@ -293,7 +432,7 @@ function onLive(v){
            valid:!!(v.getUint8(12)&1),air:!!(v.getUint8(12)&2),sd:!!(v.getUint8(12)&4),
            state:STATES[v.getUint8(13)]||'?',cr:v.getInt8(14),cc:v.getInt8(15),ppr:v.getUint8(16)/2,
            sat:v.byteLength>17&&!!(v.getUint8(17)&1),riout:v.byteLength>17&&!!(v.getUint8(17)&4),wait:v.byteLength>17&&!!(v.getUint8(17)&8),rich:v.byteLength>17&&!!(v.getUint8(17)&32),force:v.byteLength>17&&!!(v.getUint8(17)&16),rec:v.byteLength>19?v.getUint8(19)/10:null,dir:v.byteLength>17&&(v.getUint8(17)&2)?-1:1,vset:v.byteLength>18?v.getUint8(18)/80:0};
-  last=d; cnt++;autoControls();
+  last=d; cnt++;autoControls();rideOnLive(v,d);
   if(d.rpm===0&&!d.force)measuredThisRun=false;
   if(d.valid)measuredThisRun=true;
   const heating=!measuredThisRun&&!d.valid&&d.state!=='FAULT'&&!d.wait&&(d.rpm>400||d.force);
@@ -312,7 +451,7 @@ function onLive(v){
   if(d.cr!==cur.r||d.cc!==cur.c){const o=document.querySelector('td.cur');if(o)o.classList.remove('cur');
     const n=$('c'+d.cr+'_'+d.cc);if(n)n.classList.add('cur');cur={r:d.cr,c:d.cc};}
 }
-setInterval(()=>{rate=cnt;cnt=0;if(chCmd&&!lagPending&&!autoPending&&$('cfg').classList.contains('on')){if(autoSupported&&++autoTick%2===0)autoCommand('al?',true);else cmd('diag');}},1000);  // 設定画面を開いている間だけ診断値を取る
+setInterval(()=>{rate=cnt;cnt=0;if(ride.active&&performance.now()-ride.mono>=RIDE_MAX_MS)stopRideLog('60分の上限で停止しました');rideRender();if(chCmd&&!lagPending&&!autoPending){if(ride.active)cmd('diag');else if($('cfg').classList.contains('on')){if(autoSupported&&++autoTick%2===0)autoCommand('al?',true);else cmd('diag');}}},1000);  // 設定画面を開いている間だけ診断値を取る
 
 function onMap(v){
   if(v.byteLength<2)return;
@@ -335,4 +474,5 @@ function downloadCsv(){
 }
 buildIndicator();
 buildTable();
+initRideLog();
 </script></body></html>
