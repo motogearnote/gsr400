@@ -59,7 +59,7 @@ td.cur{outline:3px solid #fff;outline-offset:-3px}
   <div class="st" id="st">未接続</div>
 </section>
 <section id="ride" class="tab"><div class="set"><h3>スマホ走行ログ</h3>
-  <p class="st">状態：<b id="ride-mode">一時保存を確認中</b><br>記録行数：<b id="ride-count">0</b></p>
+  <p class="st">状態：<b id="ride-mode">一時保存を確認中</b><br>記録行数：<b id="ride-count">0</b><br>ライブ値の受信件数：<b id="ride-live-count">0</b></p>
   <div class="note">走行前に記録を開始し、停車後に停止してCSV保存します。開始・停止・保存の操作は停車中に行ってください。マップとは別の時系列ログです。</div>
   <button class="btn acc" id="ride-start" onclick="startRideLog()" disabled>走行ログの記録を開始</button>
   <button class="btn" id="ride-stop" onclick="stopRideLog()" disabled>記録を停止</button>
@@ -234,7 +234,7 @@ async function applyAutoLag(){
 // Smartphone receive log. Independent of map recording and sensor control.
 const RIDE_MAX_MS=60*60*1000, RIDE_MAX_ROWS=80000;
 const RIDE_HEADER='received_utc,elapsed_ms,event,afr_valid,afr,rpm_display,tps_pct,tps_v,battery_v,ri_ohm,state,pump_saturated_flag,ri_out_flag,pump_setpoint_v,sd_ok,un_v,ip_ma,heater_v,diag_age_ms,live_hex,response_raw,note';
-const ride={active:false,busy:false,initializing:true,rows:[],wall:0,mono:0,lastLive:null,diag:null,db:null,persistent:false,stored:0,seq:0,session:'',chain:Promise.resolve(),message:'記録なし'};
+const ride={active:false,busy:false,initializing:true,rows:[],wall:0,mono:0,lastLive:null,seenAt:null,liveCount:0,diag:null,db:null,persistent:false,stored:0,seq:0,session:'',chain:Promise.resolve(),message:'記録なし'};
 function rideCell(v){
   if(v==null||typeof v==='number'&&!Number.isFinite(v))return '';
   if(typeof v==='number')return String(v);
@@ -248,11 +248,12 @@ function rideRender(){
   $('ride-mode').textContent=ride.initializing?'一時保存を確認中':ride.busy?'保存を準備中':ride.active?'走行ログを記録中':ride.rows.length?'記録停止・CSV保存できます':'停止中';
   $('ride-mode').className=ride.active?'ok':'';
   $('ride-count').textContent=ride.rows.length;
+  $('ride-live-count').textContent=ride.liveCount;
   $('ride-banner').hidden=!ride.active;
   $('ride-banner').textContent='● 走行ログ記録中　'+ride.rows.length+'行';
-  $('ride-status').textContent=ride.message+(ride.rows.length&&!ride.persistent?' 一時保存が使えません。ページを閉じずにCSV保存してください。':'');
+  $('ride-status').textContent=ride.message+(ride.active&&(ride.seenAt==null||performance.now()-ride.seenAt>2000)?' ライブ値の受信が途切れています。':'')+(ride.rows.length&&!ride.persistent?' 一時保存が使えません。ページを閉じずにCSV保存してください。':'');
 }
-function rideMeta(){return {kind:'meta',version:1,session:ride.session,wall:ride.wall,active:ride.active,rows:ride.rows.length};}
+function rideMeta(){return {kind:'meta',version:1,session:ride.session,wall:ride.wall,active:ride.active,rows:ride.rows.length,liveCount:ride.liveCount};}
 async function rideOpenDb(){
   if(!('indexedDB' in window))return null;
   return new Promise((resolve,reject)=>{
@@ -285,6 +286,7 @@ async function initRideLog(){
       if(meta){
         const chunks=values.filter(v=>v.kind==='chunk'&&v.session===meta.session&&Array.isArray(v.rows)).sort((a,b)=>a.seq-b.seq);
         ride.rows=chunks.flatMap(c=>c.rows.filter(r=>typeof r==='string')).slice(0,RIDE_MAX_ROWS+2);
+        ride.liveCount=Number.isInteger(meta.liveCount)?meta.liveCount:ride.rows.filter(r=>/^"[^"]*",\d+,"LIVE",/.test(r)).length;
         ride.wall=meta.wall;ride.session=meta.session;ride.stored=ride.rows.length;ride.seq=chunks.length?Math.max(...chunks.map(c=>c.seq))+1:0;
         if(ride.rows.length)ride.message=meta.active?'前回の一時保存ログを復元しました。末尾数秒は残っていない可能性があります。CSV保存してください。':'前回の一時保存ログを復元しました。CSV保存できます。';
       }
@@ -294,9 +296,10 @@ async function initRideLog(){
 }
 async function startRideLog(){
   if(!chCmd||ride.active||ride.busy||ride.initializing)return;
+  if(ride.seenAt==null||performance.now()-ride.seenAt>2000){ride.message='ライブ値が届いていないため記録を開始できません。接続し直してライブ表示を確認してください。';rideRender();return;}
   if(ride.rows.length&&!confirm('前の走行ログを保存しましたか？新しい記録を開始すると、スマホ内の前の一時保存ログを置き換えます。'))return;
   ride.busy=true;rideRender();await ride.chain;
-  ride.rows=[];ride.wall=Date.now();ride.mono=performance.now();ride.session=String(ride.wall);ride.stored=ride.seq=0;ride.lastLive=null;ride.diag=null;ride.active=true;
+  ride.rows=[];ride.wall=Date.now();ride.mono=performance.now();ride.session=String(ride.wall);ride.stored=ride.seq=ride.liveCount=0;ride.lastLive=null;ride.diag=null;ride.active=true;
   ride.message='画面ON・Bluefyを前面のまま使用してください。記録するのはスマホが受信したデータです。';
   rideAppend('START',null,'','','phone_receive_log_v1');
   if(ride.db){try{await rideWrite([['meta',rideMeta()]],true);ride.persistent=true;}catch(e){ride.persistent=false;}}
@@ -312,13 +315,14 @@ function rideAppend(event,data=null,hex='',response='',note=''){
   if(ride.active&&ride.rows.length>=RIDE_MAX_ROWS)stopRideLog('行数上限で停止しました');
 }
 function rideOnLive(view,data){
+  ride.seenAt=performance.now();
   if(!ride.active)return;
   const now=performance.now();
   if(now-ride.mono>=RIDE_MAX_MS){stopRideLog('60分の上限で停止しました');return;}
   if(ride.lastLive!=null&&now-ride.lastLive>500)rideAppend('GAP',null,'','','no_live_ms='+Math.round(now-ride.lastLive));
   if(!ride.active)return;
   let hex='';for(let i=0;i<view.byteLength;i++)hex+=view.getUint8(i).toString(16).padStart(2,'0');
-  rideAppend('LIVE',data,hex);ride.lastLive=now;
+  ride.liveCount++;rideAppend('LIVE',data,hex);ride.lastLive=now;
 }
 function rideOnResponse(text){
   if(!ride.active)return;
@@ -332,7 +336,7 @@ function rideOnResponse(text){
   }
   rideAppend('RESPONSE',null,'',text.slice(0,512));
 }
-function rideEvent(event,note=''){if(ride.active)rideAppend(event,null,'','',note);}
+function rideEvent(event,note=''){if(event==='DISCONNECTED')ride.seenAt=null;if(ride.active)rideAppend(event,null,'','',note);}
 async function stopRideLog(reason='停車後、CSV保存してください'){
   if(!ride.active)return;
   ride.active=false;ride.busy=true;rideAppend('STOP',null,'','',reason);ride.message=reason;rideRender();
@@ -357,6 +361,29 @@ document.addEventListener('visibilitychange',()=>{rideEvent(document.visibilityS
 window.addEventListener('pagehide',()=>rideFlush());
 
 /* RIDE_LOG_END */
+/* BLE_EVENTS_BEGIN */
+// Bluefy uses addEventListener; assigning oncharacteristicvaluechanged is insufficient.
+// Bind each event once per object so reconnects do not duplicate deliveries.
+const bleBindings=new WeakMap();
+function bindBleEvent(target,type,handler){
+  let types=bleBindings.get(target);
+  if(!types){types=new Set();bleBindings.set(target,types);}
+  if(types.has(type))return;
+  target.addEventListener(type,handler);types.add(type);
+}
+function onBleLive(event){onLive(event.target.value);}
+function onBleMap(event){onMap(event.target.value);}
+
+function onBleResponse(e){const t=new TextDecoder().decode(e.target.value);
+    rideOnResponse(t);
+    if(handleAutoResponse(t))return;
+    if(handleLagResponse(t))return;
+    if(t[0]==='S'&&/^S\d/.test(t))return;
+    if(t[0]==='D'){const a=t.slice(1).split(' ').map(Number);$('un').textContent=(a[0]/1000).toFixed(3);$('ip').textContent=(a[1]/100).toFixed(2);$('hv').textContent=(a[2]/10).toFixed(1);
+      if(a.length>=4){const src=t.trim().split(' ')[4]||'-';$('calst').textContent=src==='-'?'未校正（初回だけ行ってください）':'済み（係数 '+(a[3]/1000).toFixed(3)+'、'+(src==='S'?'microSDと本体に保存':'本体に保存・microSDなし')+'）';}
+      return;}
+    toast(MSG[t]||t);}
+/* BLE_EVENTS_END */
 const isAndroid=/Android/i.test(navigator.userAgent);
 if(isAndroid)$('andro').style.display='block';
 if(!navigator.bluetooth){$('cbtn').style.display='none';$('nobt').style.display='block';}
@@ -377,7 +404,7 @@ $('cbtn').onclick=connect;
 async function connect(){
   try{
     dev=await navigator.bluetooth.requestDevice({filters:[{name:'GSR400'},{services:[SVC]}],optionalServices:[SVC]});
-    dev.ongattserverdisconnected=onDisc;
+    bindBleEvent(dev,'gattserverdisconnected',onDisc);
     wantConnected=true; await open();
   }catch(e){
     if(e.name==='NotFoundError'&&/cancel/i.test(e.message)){$('cmsg').textContent='選択がキャンセルされました。もう一度「接続」を押してください。';return;}
@@ -389,17 +416,9 @@ async function open(){
   const s=await srv.getPrimaryService(SVC);
   const live=await s.getCharacteristic(LIVE), mp=await s.getCharacteristic(MAP), rs=await s.getCharacteristic(RESP);
   chCmd=await s.getCharacteristic(CMD);
-  live.oncharacteristicvaluechanged=e=>onLive(e.target.value);
-  mp.oncharacteristicvaluechanged=e=>onMap(e.target.value);
-  rs.oncharacteristicvaluechanged=e=>{const t=new TextDecoder().decode(e.target.value);
-    rideOnResponse(t);
-    if(handleAutoResponse(t))return;
-    if(handleLagResponse(t))return;
-    if(t[0]==='S'&&/^S\d/.test(t))return;
-    if(t[0]==='D'){const a=t.slice(1).split(' ').map(Number);$('un').textContent=(a[0]/1000).toFixed(3);$('ip').textContent=(a[1]/100).toFixed(2);$('hv').textContent=(a[2]/10).toFixed(1);
-      if(a.length>=4){const src=t.trim().split(' ')[4]||'-';$('calst').textContent=src==='-'?'未校正（初回だけ行ってください）':'済み（係数 '+(a[3]/1000).toFixed(3)+'、'+(src==='S'?'microSDと本体に保存':'本体に保存・microSDなし')+'）';}
-      return;}
-    toast(MSG[t]||t);};
+  bindBleEvent(live,'characteristicvaluechanged',onBleLive);
+  bindBleEvent(mp,'characteristicvaluechanged',onBleMap);
+  bindBleEvent(rs,'characteristicvaluechanged',onBleResponse);
   await live.startNotifications(); await mp.startNotifications(); await rs.startNotifications();
   $('connect').classList.add('hide');
   rideEvent('RECONNECTED');rideRender();
