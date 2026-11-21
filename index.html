@@ -64,8 +64,9 @@ td.cur{outline:3px solid #fff;outline-offset:-3px}
   <button class="btn acc" id="ride-start" onclick="startRideLog()" disabled>走行ログの記録を開始</button>
   <button class="btn" id="ride-stop" onclick="stopRideLog()" disabled>記録を停止</button>
   <button class="btn acc" id="ride-save" onclick="saveRideLog()" disabled>走行ログCSVを保存・共有</button>
+  <div class="note" id="fault-status" role="status">異常詳細：本体V38で取得できます</div>
   <div class="note" id="ride-status" role="status" aria-live="polite">記録なし</div>
-  <div class="note">最大60分。受信したライブ値（約20回/秒）と約1秒間隔の診断応答を記録します。時刻はスマホの受信時刻です。<br>画面ON・Bluefyを前面で使用してください。画面ロック・他アプリ使用中は受信が止まる場合があります。切断や受信の空白も記録します。<br>約5秒ごとにブラウザー内へ一時保存しますが、端末の都合で消えることがあります。停車後にCSVを「ファイル」へ保存し、保存先を確認してください。<br>現行本体では詳細な保護停止理由を送信していません。ポンプ張り付きフラグは異常停止後も残る場合があります。ログ保存は異常原因の解消を意味しません。</div>
+  <div class="note">最大60分。受信したライブ値（約20回/秒）と約1秒間隔の診断応答を記録します。時刻はスマホの受信時刻です。<br>画面ON・Bluefyを前面で使用してください。画面ロック・他アプリ使用中は受信が止まる場合があります。切断や受信の空白も記録します。<br>約5秒ごとにブラウザー内へ一時保存しますが、端末の都合で消えることがあります。停車後にCSVを「ファイル」へ保存し、保存先を確認してください。<br>本体V38では保護停止理由と停止直前の診断値を取得し、CSVのFAULT_SNAPSHOT行に保存します。旧版本体では詳細を取得できません。ポンプ張り付きフラグは異常停止後も残る場合があります。ログ保存は異常原因の解消を意味しません。</div>
 </div></section>
 <section id="map" class="tab">
   <div class="note">縦＝回転数、横＝スロットル開度。マスの数字は、その条件で最後に記録した空燃比です（本体のmicroSDの AFRMAP.CSV に自動保存）。白枠は今の位置。</div>
@@ -302,11 +303,12 @@ async function startRideLog(){
   ride.rows=[];ride.wall=Date.now();ride.mono=performance.now();ride.session=String(ride.wall);ride.stored=ride.seq=ride.liveCount=0;ride.lastLive=null;ride.diag=null;ride.active=true;
   ride.message='画面ON・Bluefyを前面のまま使用してください。記録するのはスマホが受信したデータです。';
   rideAppend('START',null,'','','phone_receive_log_v1');
+  if(typeof faultLog!=='undefined'&&faultLog.last)rideAppend('FAULT_SNAPSHOT',null,'','',JSON.stringify(faultLog.last));
   if(ride.db){try{await rideWrite([['meta',rideMeta()]],true);ride.persistent=true;}catch(e){ride.persistent=false;}}
   ride.busy=false;rideRender();keepAwake();
 }
 function rideAppend(event,data=null,hex='',response='',note=''){
-  const now=performance.now(),d=data||{},diag=ride.diag;
+  const now=performance.now(),d=data||{},diag=event==='FAULT_SNAPSHOT'?null:ride.diag;
   const row=[new Date().toISOString(),Math.max(0,Math.round(now-ride.mono)),event,
     data?Number(d.valid):null,data&&d.valid?d.afr:null,d.rpm,d.tps,d.tpsv,d.vb,d.ri,d.state,
     data?Number(d.sat):null,data?Number(d.riout):null,d.vset,data?Number(d.sd):null,
@@ -376,6 +378,7 @@ function onBleMap(event){onMap(event.target.value);}
 
 function onBleResponse(e){const t=new TextDecoder().decode(e.target.value);
     rideOnResponse(t);
+    if(handleFaultResponse(t))return;
     if(handleAutoResponse(t))return;
     if(handleLagResponse(t))return;
     if(t[0]==='S'&&/^S\d/.test(t))return;
@@ -383,7 +386,48 @@ function onBleResponse(e){const t=new TextDecoder().decode(e.target.value);
       if(a.length>=4){const src=t.trim().split(' ')[4]||'-';$('calst').textContent=src==='-'?'未校正（初回だけ行ってください）':'済み（係数 '+(a[3]/1000).toFixed(3)+'、'+(src==='S'?'microSDと本体に保存':'本体に保存・microSDなし')+'）';}
       return;}
     toast(MSG[t]||t);}
+
 /* BLE_EVENTS_END */
+// A four-page, read-only snapshot, requested only while the live state is FAULT.
+const faultLog={page:0,pending:false,sentAt:0,tries:0,parts:[],done:false,unsupported:false,last:null};
+const FAULT_NAMES={1:'COMMAND_RANGE',2:'SUPPLY_RANGE',3:'TIMEOUT',4:'ADC_HIGH',5:'ADC_LOW',6:'TARGET_STABLE',7:'OUTPUT_LIMIT',8:'NOT_READY',9:'INVALID_SIGNAL',10:'RI_STALE',11:'AIR_CAPTURED',12:'AIR_UNSTABLE',13:'UN_UNSTABLE',14:'SUPPLY_STALE'};
+function resetFaultLog(){Object.assign(faultLog,{page:0,pending:false,sentAt:0,tries:0,parts:[],done:false,unsupported:false,last:null});}
+function faultPoll(){
+  if(last?.state!=='FAULT'){
+    if(faultLog.done||faultLog.pending||faultLog.tries)resetFaultLog();
+    return false;
+  }
+  if(faultLog.unsupported||faultLog.done)return false;
+  if(faultLog.pending&&performance.now()-faultLog.sentAt<1800)return false;
+  if(faultLog.tries>=3){$('fault-status').textContent='異常詳細を受信できません。再接続後に確認してください。';faultLog.done=true;return false;}
+  faultLog.pending=true;faultLog.sentAt=performance.now();faultLog.tries++;
+  cmd('trip'+faultLog.page);return true;
+}
+function handleFaultResponse(text){
+  if(text==='NG_UNKNOWN'&&faultLog.pending){
+    faultLog.pending=false;faultLog.unsupported=true;
+    $('fault-status').textContent='異常詳細の取得には本体V38への更新が必要です。';return true;
+  }
+  if(!/^T[0-3][0-9A-F]+$/.test(text))return false;
+  if(!faultLog.pending)return true;
+  const page=Number(text[1]);
+  if(page!==faultLog.page||text.length!==(page===0?20:18))return true;
+  const token=text.slice(page===0?4:2,page===0?12:10);
+  if(page&&token!==faultLog.parts[0].slice(4,12))return true;
+  faultLog.parts[page]=text;faultLog.pending=false;faultLog.tries=0;
+  if(!page&&parseInt(text.slice(2,4),16)===0){
+    $('fault-status').textContent='本体に取得可能な異常詳細がありません。';faultLog.done=true;return true;
+  }
+  if(++faultLog.page<4)return true;
+  const word=(s,at)=>{const n=parseInt(s.slice(at,at+4),16);return n===0x8000?null:(n>=0x8000?n-65536:n)/1000;};
+  const [a,b,c,d]=faultLog.parts,reason=parseInt(a.slice(2,4),16);
+  const snapshot={reason,reason_name:FAULT_NAMES[reason]||'UNKNOWN',control_elapsed_ms:parseInt(token,16),time_basis:reason===2||reason===14?'device_uptime':'control_phase_elapsed',battery_v:word(a,12),heater_before_stop_v:word(a,16),un_v:word(b,10),vm_v:word(b,14),ip_amp_v:word(c,10),ip_raw_ma:word(c,14),pump_above_vm_v:word(d,10)};
+  faultLog.last=snapshot;faultLog.done=true;
+  $('fault-status').textContent='停止理由：'+snapshot.reason_name+'（'+reason+'）';
+  if(ride.active)rideAppend('FAULT_SNAPSHOT',null,'','',JSON.stringify(snapshot));
+  return true;
+}
+
 const isAndroid=/Android/i.test(navigator.userAgent);
 if(isAndroid)$('andro').style.display='block';
 if(!navigator.bluetooth){$('cbtn').style.display='none';$('nobt').style.display='block';}
@@ -431,7 +475,7 @@ async function open(){
   reqMap();
 }
 async function onDisc(){
-  rideEvent('DISCONNECTED');
+  rideEvent('DISCONNECTED');resetFaultLog();
   chCmd=null;rideRender();resetAutoSetting('切断中です。再接続後に本体から読み直します。');resetLagSetting('切断中です。再接続後に本体の値を読み直します。'); $('st').innerHTML='<span class="ng">切断されました。再接続中…</span>';
   for(let i=0;i<30&&wantConnected;i++){            // 自動で再接続（範囲外に出たときなど）
     try{await open();return;}catch(e){await new Promise(r=>setTimeout(r,1000));}
@@ -470,7 +514,7 @@ function onLive(v){
   if(d.cr!==cur.r||d.cc!==cur.c){const o=document.querySelector('td.cur');if(o)o.classList.remove('cur');
     const n=$('c'+d.cr+'_'+d.cc);if(n)n.classList.add('cur');cur={r:d.cr,c:d.cc};}
 }
-setInterval(()=>{rate=cnt;cnt=0;if(ride.active&&performance.now()-ride.mono>=RIDE_MAX_MS)stopRideLog('60分の上限で停止しました');rideRender();if(chCmd&&!lagPending&&!autoPending){if(ride.active)cmd('diag');else if($('cfg').classList.contains('on')){if(autoSupported&&++autoTick%2===0)autoCommand('al?',true);else cmd('diag');}}},1000);  // 設定画面を開いている間だけ診断値を取る
+setInterval(()=>{rate=cnt;cnt=0;if(ride.active&&performance.now()-ride.mono>=RIDE_MAX_MS)stopRideLog('60分の上限で停止しました');rideRender();if(chCmd&&!lagPending&&!autoPending){if(faultPoll()){}else if(ride.active)cmd('diag');else if($('cfg').classList.contains('on')){if(autoSupported&&++autoTick%2===0)autoCommand('al?',true);else cmd('diag');}}},1000);  // 設定画面を開いている間だけ診断値を取る
 
 function onMap(v){
   if(v.byteLength<2)return;
